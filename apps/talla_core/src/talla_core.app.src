@@ -1,0 +1,17 @@
+{application, talla_core, [
+    {description, "Talla: Core Application and Utilities"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, [talla_core_sup]},
+    {mod, {talla_core_app, []}},
+    {applications, [
+        crypto,
+        kernel,
+        stdlib,
+        sasl,
+        onion,
+        lager
+   ]}
+]}.
+
+%% vim: ft=erlang :

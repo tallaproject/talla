@@ -1,0 +1,20 @@
+{application, talla_dir, [
+    {description, "Talla: Directory Index"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, [talla_dir_sup]},
+    {mod, {talla_dir_app, []}},
+    {applications, [
+        cowboy,
+        hackney,
+        kernel,
+        lager,
+        onion,
+        ranch,
+        stdlib,
+        talla_core,
+        talla_or
+   ]}
+]}.
+
+%% vim: ft=erlang :

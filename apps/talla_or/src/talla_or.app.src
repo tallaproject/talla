@@ -1,0 +1,18 @@
+{application, talla_or, [
+    {description, "Talla: Onion Router"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, []},
+    {mod, {talla_or_app, []}},
+    {applications, [
+        kernel,
+        lager,
+        onion,
+        ranch,
+        ssl,
+        stdlib,
+        talla_core
+   ]}
+]}.
+
+%% vim: ft=erlang :
