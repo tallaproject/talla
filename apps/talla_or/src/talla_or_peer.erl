@@ -14,7 +14,10 @@
 %% API.
 -export([start_link/0,
          connect/3,
-         dispatch/2]).
+         dispatch/2,
+         set_protocol/2,
+         close/1
+        ]).
 
 %% Ranch API.
 -export([start_link/4, init/4]).
@@ -58,6 +61,19 @@ connect(Peer, Address, Port) ->
         Cell :: onion_cell:cell().
 dispatch(Peer, Cell) ->
     gen_server:cast(Peer, {dispatch, Cell}).
+
+-spec set_protocol(Peer, Protocol) -> ok
+    when
+        Peer     :: pid(),
+        Protocol :: onion_cell:version().
+set_protocol(Peer, Protocol) ->
+    gen_server:cast(Peer, {set_protocol, Protocol}).
+
+-spec close(Peer) -> ok
+    when
+        Peer :: pid().
+close(Peer) ->
+    gen_server:cast(Peer, close).
 
 %% @private
 start_link(Ref, Socket, Transport, Options) ->
@@ -122,6 +138,13 @@ handle_cast({dispatch, Cell}, #state { protocol = Protocol, socket = Socket } = 
     end,
     {noreply, State};
 
+handle_cast({set_protocol, Protocol}, State) ->
+    lager:info("Setting peer protocol: ~p", [Protocol]),
+    {noreply, State#state { protocol = Protocol }};
+
+handle_cast(close, State) ->
+    {stop, normal, State};
+
 handle_cast(Message, State) ->
     lager:warning("Unhandled cast: ~p", [Message]),
     {noreply, State}.
@@ -131,8 +154,8 @@ handle_info({ssl, Socket, Packet}, #state { socket = Socket, protocol = Protocol
     ok = ack_socket(Socket),
     Data = <<Continuation/binary, Packet/binary>>,
     case process_stream_chunk(FSM, Protocol, Data) of
-        {ok, NewProtocol, NewContinuation} ->
-            {noreply, State#state { protocol = NewProtocol, continuation = NewContinuation }};
+        {ok, NewContinuation} ->
+            {noreply, State#state { continuation = NewContinuation }};
 
         {error, _} = Error ->
             {stop, Error, State}
@@ -176,19 +199,11 @@ send(Socket, Data) ->
 process_stream_chunk(PeerFSM, Protocol, Data) ->
     case onion_cell:decode(Protocol, Data) of
         {ok, Cell, NewData} ->
-            case talla_or_peer_fsm:dispatch(PeerFSM, Cell) of
-                {upgrade, NewProtocol} ->
-                    process_stream_chunk(PeerFSM, NewProtocol, NewData);
-
-                {close, Reason} ->
-                    {error, {closed, Reason}};
-
-                _ ->
-                    process_stream_chunk(PeerFSM, Protocol, NewData)
-            end;
+            talla_or_peer_fsm:dispatch(PeerFSM, Cell),
+            process_stream_chunk(PeerFSM, Protocol, NewData);
 
         {error, insufficient_data} ->
-            {ok, Protocol, Data};
+            {ok, Data};
 
         {error, _} = Error ->
             Error
