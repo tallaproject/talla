@@ -14,7 +14,9 @@
 %% API.
 -export([start_link/0,
          get/3,
-         get/4]).
+         get/4,
+         post/4,
+         post/5]).
 
 %% Generic Server Behaviour.
 -export([init/1,
@@ -36,6 +38,12 @@ get(Address, Port, Resource) ->
 get(Address, Port, Resource, Extra) ->
     gen_server:cast(?SERVER, {get, Address, Port, Resource, Extra, self()}).
 
+post(Address, Port, Resource, Body) ->
+    post(Address, Port, Resource, Body, []).
+
+post(Address, Port, Resource, Body, Extra) ->
+    gen_server:cast(?SERVER, {post, Address, Port, Resource, Body, Extra, self()}).
+
 %% @private
 init([]) ->
     {ok, maps:new()}.
@@ -50,6 +58,18 @@ handle_cast({get, Address, Port, Resource, Extra, Pid}, State) ->
     URL = onion_string:format("http://~s:~b/tor/~s", [inet:ntoa(Address), Port, Resource]),
     lager:info("GET ~s", [URL]),
     case hackney:get(URL, [{<<"User-Agent">>, talla_core:platform()}], <<>>, [async]) of
+        {ok, Ref} ->
+            {noreply, maps:put(Ref, #{ owner => Pid, extra => Extra }, State)};
+
+        {error, Reason} ->
+            Pid ! {http_client_error, Reason},
+            {noreply, State}
+    end;
+
+handle_cast({post, Address, Port, Resource, Body, Extra, Pid}, State) ->
+    URL = onion_string:format("http://~s:~b/tor/~s", [inet:ntoa(Address), Port, Resource]),
+    lager:info("POST ~s", [URL]),
+    case hackney:post(URL, [{<<"User-Agent">>, talla_core:platform()}], Body, [async]) of
         {ok, Ref} ->
             {noreply, maps:put(Ref, #{ owner => Pid, extra => Extra }, State)};
 
