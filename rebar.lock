@@ -35,7 +35,7 @@
  {<<"mimerl">>,{pkg,<<"mimerl">>,<<"1.0.2">>},1},
  {<<"onion">>,
   {git,"git@lab.baconsvin.org:talla/onion.git",
-       {ref,"8d71e3df75016193aea2735158141da63ae652bf"}},
+       {ref,"e68d2edf4d3cd3392dcb4d98931d156613bd768e"}},
   0},
  {<<"ranch">>,
   {git,"https://github.com/ninenines/ranch.git",
