@@ -78,10 +78,11 @@ handle_cast(announce, State) ->
                     ntor_onion_key => talla_core_secret_ntor_onion_key:public_key()
                 }),
             SignedDocument = talla_core_secret_id_key:sign_document(Document),
-            lists:foreach(fun (#{ address := Address, dir_port := Port }) ->
+            Authorities    = talla_core_config:authorities(),
+            lists:foreach(fun (#{ address := Address, dir_port := Port } = Authority) ->
                               lager:notice("Publishing server descriptor to ~s:~b", [inet:ntoa(Address), Port]),
-                              talla_dir_http_client:post(Address, Port, "", SignedDocument)
-                          end, talla_core_config:authorities());
+                              talla_dir_http_client:post(Address, Port, "", SignedDocument, Authority)
+                          end, Authorities);
 
         false ->
             lager:warning("Trying to announce onion router, but the onion router is disabled in the config.")
@@ -93,6 +94,10 @@ handle_cast(Message, State) ->
     {noreply, State}.
 
 %% @private
+handle_info({http_client_response, Status, _Headers, #{ address := Address, dir_port := DirPort }, _Response}, State) ->
+    lager:notice("Got ~b from authority: ~s:~b", [Status, inet:ntoa(Address), DirPort]),
+    {noreply, State};
+
 handle_info(Info, State) ->
     lager:warning("Unhandled info '~p' (State: ~p)", [Info, State]),
     {noreply, State}.
