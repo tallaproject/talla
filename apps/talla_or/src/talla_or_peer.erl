@@ -30,11 +30,6 @@
 
 -include_lib("public_key/include/public_key.hrl").
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--include_lib("triq/include/triq.hrl").
--endif.
-
 -record(state, {
         socket       :: ssl:socket() | undefined,
         continuation :: binary(),
