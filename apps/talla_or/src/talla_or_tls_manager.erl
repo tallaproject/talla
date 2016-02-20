@@ -13,7 +13,9 @@
 
 %% API.
 -export([start_link/0,
-         link_certificate/0
+         link_certificate/0,
+         id_certificate/0,
+         auth_certificate/0
         ]).
 
 %% Generic Server Behaviour.
@@ -26,40 +28,48 @@
         ]).
 
 -define(SERVER, ?MODULE).
--define(LINK_CERTIFICATE_LIFETIME, (3 * 60 * 60)).
+
+-define(ID_CERTIFICATE_LIFETIME,   (365 * 24 * 60 * 60)).
 
 %% Types.
 -record(state, {
-            secret_key  :: public_key:der_encoded(),
-            certificate :: public_key:der_encoded(),
-            timer_ref   :: reference()
-         }).
+        certificates :: map()
+    }).
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec link_certificate() -> {SecretKey, Certificate}
+-spec link_certificate() -> {KeyPair, Certificate}
     when
-        SecretKey   :: public_key:der_encoded(),
+        KeyPair     :: onion_rsa:keypair(),
         Certificate :: public_key:der_encoded().
 link_certificate() ->
-    gen_server:call(?SERVER, link_certificate).
+    gen_server:call(?SERVER, {get_certificate, link_certificate}).
+
+-spec id_certificate() -> {KeyPair, Certificate}
+    when
+        KeyPair     :: onion_rsa:keypair(),
+        Certificate :: public_key:der_encoded().
+id_certificate() ->
+    gen_server:call(?SERVER, {get_certificate, id_certificate}).
+
+-spec auth_certificate() -> {KeyPair, Certificate}
+    when
+        KeyPair     :: onion_rsa:keypair(),
+        Certificate :: public_key:der_encoded().
+auth_certificate() ->
+    gen_server:call(?SERVER, {get_certificate, auth_certificate}).
 
 %% @private
 init([]) ->
-    {SecretKey, Certificate} = new_link_certificate(),
-    lager:notice("Link certificate: ~s", [onion_binary:fingerprint(sha, Certificate)]),
-    TimerRef = start_timer(),
-    {ok, #state {
-            secret_key  = SecretKey,
-            certificate = Certificate,
-            timer_ref   = TimerRef
-           }}.
+    Certificates = new_certificates(),
+    log_certificates(Certificates),
+    {ok, #state { certificates = Certificates }}.
 
 %% @private
-handle_call(link_certificate, _From, #state { secret_key = SecretKey, certificate = Certificate } = State) ->
-    {reply, {SecretKey, Certificate}, State};
+handle_call({get_certificate, Certificate}, _From, #state { certificates = Certificates } = State) ->
+    {reply, maps:get(Certificate, Certificates, not_found), State};
 
 handle_call(Request, From, State) ->
     lager:warning("Unhandled call '~p' from ~p (State: ~p)", [Request, From, State]),
@@ -71,16 +81,6 @@ handle_cast(Message, State) ->
     {noreply, State}.
 
 %% @private
-handle_info({timeout, TimerRef, rotate}, #state { timer_ref = TimerRef } = State) ->
-    {SecretKey, Certificate} = new_link_certificate(),
-    lager:notice("Rotating link certificate: ~s", [onion_binary:fingerprint(sha, Certificate)]),
-    NewTimerRef = start_timer(),
-    {noreply, State#state {
-                secret_key  = SecretKey,
-                certificate = Certificate,
-                timer_ref   = NewTimerRef
-              }};
-
 handle_info(Info, State) ->
     lager:warning("Unhandled info '~p' (State: ~p)", [Info, State]),
     {noreply, State}.
@@ -110,25 +110,63 @@ certificate_lifetime() ->
     end.
 
 %% @private
--spec new_link_certificate() -> {public_key:der_encoded(), public_key:der_encoded()}.
-new_link_certificate() ->
+new_certificates() ->
     Lifetime = certificate_lifetime(),
-    Now = onion_time:unix_epoch(),
-    StartTimeSecond = onion_random:time_range(Now - Lifetime, Now) + 2 * 24 * 60 * 60,
-    StartTime = StartTimeSecond - (StartTimeSecond rem (24 * 60 * 60)),
-    EndTime   = StartTime + Lifetime,
-    {ok, #{ secret := SecretKey, public := PublicKey }} = onion_rsa:keypair(1024),
-    {ok, SecretKeyDer} = onion_rsa:der_encode(SecretKey),
-    {ok, Certificate} = onion_x509:create_certificate(#{
-                                public_key => PublicKey,
-                                valid_from => onion_time:from_unix_epoch(StartTime),
-                                valid_to   => onion_time:from_unix_epoch(EndTime),
-                                subject    => [{name, onion_random:hostname(8, 20, "www.", ".net")}],
-                                issuer     => [{name, onion_random:hostname(8, 20, "www.", ".com")}]
-                            }),
-    {SecretKeyDer, talla_core_secret_id_key:sign_certificate(Certificate)}.
+
+    Nickname1 = onion_random:hostname(8, 20, "www.", ".net"),
+    Nickname2 = onion_random:hostname(8, 20, "www.", ".com"),
+
+    IDPublicKey = talla_core_secret_id_key:public_key(),
+
+    {ok, #{ public := LinkPublicKey } = LinkKeyPair } = onion_rsa:keypair(1024),
+    {ok, #{ public := AuthPublicKey } = AuthKeyPair } = onion_rsa:keypair(1024),
+
+    {ok, LinkCertificate} = new_certificate(LinkPublicKey, Nickname1, Nickname2, Lifetime),
+    {ok, IDCertificate}   = new_certificate(IDPublicKey, Nickname2, Nickname2, ?ID_CERTIFICATE_LIFETIME),
+    {ok, AuthCertificate} = new_certificate(AuthPublicKey, Nickname1, Nickname2, Lifetime),
+
+    #{ link_certificate => {LinkKeyPair, talla_core_secret_id_key:sign_certificate(LinkCertificate)},
+       id_certificate   => {#{ public => IDPublicKey }, talla_core_secret_id_key:sign_certificate(IDCertificate)},
+       auth_certificate => {AuthKeyPair, talla_core_secret_id_key:sign_certificate(AuthCertificate)} }.
 
 %% @private
--spec start_timer() -> reference().
-start_timer() ->
-    erlang:start_timer(timer:seconds(?LINK_CERTIFICATE_LIFETIME), self(), rotate).
+-spec new_certificate(PublicKey, Nickname1, Nickname2, Lifetime) -> {ok, Certificate} | {error, Reason}
+    when
+        PublicKey   :: onion_rsa:public_key(),
+        Nickname1   :: string(),
+        Nickname2   :: string(),
+        Lifetime    :: pos_integer(),
+        Certificate :: term(),
+        Reason      :: term().
+new_certificate(PublicKey, Nickname1, Nickname2, Lifetime) ->
+    Now = onion_time:unix_epoch(),
+    StartTimeSecond = onion_random:time_range(Now - Lifetime, Now) + 2 * 24 * 60 * 60,
+
+    StartTime = StartTimeSecond - (StartTimeSecond rem (24 * 60 * 60)),
+    EndTime   = StartTime + Lifetime,
+
+    onion_x509:create_certificate(#{
+        public_key => PublicKey,
+        valid_from => onion_time:from_unix_epoch(StartTime),
+        valid_to   => onion_time:from_unix_epoch(EndTime),
+        subject    => [{name, Nickname1}],
+        issuer     => [{name, Nickname2}]
+    }).
+
+%% @private
+-spec log_certificates(map()) -> ok.
+log_certificates(Certificates) ->
+    lists:foreach(fun log_certificate/1, maps:to_list(Certificates)).
+
+%% @private
+-spec log_certificate(term()) -> ok.
+log_certificate({Type, {_KeyPair, Certificate}}) ->
+    Hash = onion_binary:fingerprint(sha, Certificate),
+    case Type of
+        link_certificate ->
+            lager:notice("Link certificate: ~s", [Hash]);
+        id_certificate ->
+            lager:notice("ID certificate: ~s", [Hash]);
+        auth_certificate ->
+            lager:notice("Auth certificate: ~s", [Hash])
+    end.

@@ -59,8 +59,10 @@ accept(LSocket, Timeout) ->
 
 -spec accept_ack(ssl:sslsocket(), timeout()) -> ok.
 accept_ack(CSocket, Timeout) ->
-    {SecretKey, Certificate} = talla_or_tls_manager:link_certificate(),
-    case ssl:ssl_accept(CSocket, [{key, {'RSAPrivateKey', SecretKey}}, {cert, Certificate}], Timeout) of
+    {#{ secret := SecretKey}, Certificate} = talla_or_tls_manager:link_certificate(),
+    {ok, SecretKeyDER} = onion_rsa:der_encode(SecretKey),
+    case ssl:ssl_accept(CSocket, [{key, {'RSAPrivateKey', SecretKeyDER}},
+                                  {cert, Certificate}], Timeout) of
         ok ->
             ok;
 

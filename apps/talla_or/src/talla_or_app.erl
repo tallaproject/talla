@@ -50,7 +50,8 @@ start_relay() ->
     Port = talla_or_config:port(),
     lager:notice("Starting onion router on port ~b", [Port]),
 
-    {SecretKey, Certificate} = talla_or_tls_manager:link_certificate(),
+    {#{ secret := SecretKey }, Certificate} = talla_or_tls_manager:link_certificate(),
+    {ok, SecretKeyDER} = onion_rsa:der_encode(SecretKey),
 
     Options = [
             {port, Port},
@@ -62,7 +63,7 @@ start_relay() ->
             {reuse_sessions, false},
 
             {cert, Certificate},
-            {key, {'RSAPrivateKey', SecretKey}}
+            {key, {'RSAPrivateKey', SecretKeyDER}}
         ],
     case ranch:start_listener(talla_or, 100, talla_or_tls, Options, talla_or_peer_pool, []) of
         {ok, _} ->
