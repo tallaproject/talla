@@ -15,7 +15,8 @@
 -export([start_link/0,
          public_key/0,
          sign/1,
-         sign_certificate/1
+         sign_certificate/1,
+         sign_document/1
         ]).
 
 %% Generic Server Callbacks.
@@ -49,6 +50,13 @@ sign(Data) when is_binary(Data) ->
         CertificateDer :: public_key:der_encoded().
 sign_certificate(Certificate) ->
     gen_server:call(?SERVER, {sign_certificate, Certificate}).
+
+-spec sign_document(Document) -> SignedDocument
+    when
+        Document       :: iolist(),
+        SignedDocument :: iolist().
+sign_document(Document) ->
+    gen_server:call(?SERVER, {sign_document, Document}).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
@@ -85,6 +93,10 @@ handle_call(public_key, _From, #state { key = #{ public := PublicKey } } = State
 
 handle_call({sign, Data}, _From, #state { key = #{ secret := SecretKey } } = State) ->
     {reply, onion_rsa:private_encrypt(crypto:hash(sha, Data), SecretKey), State};
+
+handle_call({sign_document, Document}, _From, #state { key = #{ secret := SecretKey } } = State) ->
+    Signature = onion_rsa:private_encrypt(crypto:hash(sha, Document), SecretKey),
+    {reply, [Document, onion_pem:encode("SIGNATURE", Signature)], State};
 
 handle_call({sign_certificate, Certificate}, _From, #state { key = #{ secret := SecretKey } } = State) ->
     {reply, onion_x509:sign(Certificate, SecretKey), State};
