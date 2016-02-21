@@ -143,13 +143,13 @@ authenticate({dispatch, #{ command := netinfo, payload := _Netinfo } = Cell}, #s
 
 catch_all({dispatch, #{ command := create2, circuit := CID, payload := #{ type := ntor, data := <<Fingerprint:20/binary, NTorPublicKey:32/binary, PublicKey:32/binary>> }, circuit := CircuitID} = Cell}, #state { type = incoming, circuits = Circuits } = State) ->
     log_incoming_cell(State, Cell),
-    {ok, ServerPublicKey}     = onion_rsa:der_encode(talla_core_secret_id_key:public_key()),
-    ServerNTorPublicKey = talla_core_secret_ntor_onion_key:public_key(),
+    {ok, ServerPublicKey}     = onion_rsa:der_encode(talla_core_identity_key:public_key()),
+    ServerNTorPublicKey = talla_core_ntor_key:public_key(),
     OurFingerprint = crypto:hash(sha, ServerPublicKey),
 
     case {Fingerprint, NTorPublicKey} of
         {OurFingerprint, ServerNTorPublicKey} ->
-            {Response, KeySeed} = talla_core_secret_ntor_onion_key:server_handshake(PublicKey),
+            {Response, KeySeed} = talla_core_ntor_key:server_handshake(PublicKey),
             dispatch_cell(State, onion_cell:created2(CID, Response)),
             {next_state, catch_all, State#state { circuits = maps:put(CID, KeySeed, Circuits) }};
 

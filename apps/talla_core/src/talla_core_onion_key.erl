@@ -8,7 +8,7 @@
 %%% @doc Secret Onion Key server
 %%% @end
 %%% ----------------------------------------------------------------------------
--module(talla_core_secret_onion_key).
+-module(talla_core_onion_key).
 -behaviour(gen_server).
 
 %% API.

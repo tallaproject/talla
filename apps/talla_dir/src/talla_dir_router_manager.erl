@@ -53,8 +53,8 @@ handle_call(Request, From, State) ->
 
 %% @private
 handle_cast(announce, State) ->
-    {ok, SigningKey} = onion_rsa:der_encode(talla_core_secret_id_key:public_key()),
-    {ok, OnionKey}   = onion_rsa:der_encode(talla_core_secret_onion_key:public_key()),
+    {ok, SigningKey} = onion_rsa:der_encode(talla_core_identity_key:public_key()),
+    {ok, OnionKey}   = onion_rsa:der_encode(talla_core_onion_key:public_key()),
     case talla_or_config:enabled() of
         true ->
             Document = onion_server_descriptor:encode(#{
@@ -75,9 +75,9 @@ handle_cast(announce, State) ->
 
                     signing_key    => SigningKey,
                     onion_key      => OnionKey,
-                    ntor_onion_key => talla_core_secret_ntor_onion_key:public_key()
+                    ntor_onion_key => talla_core_ntor_key:public_key()
                 }),
-            SignedDocument = talla_core_secret_id_key:sign_document(Document),
+            SignedDocument = talla_core_identity_key:sign_document(Document),
             Authorities    = talla_core_config:authorities(),
             lists:foreach(fun (#{ address := Address, dir_port := Port } = Authority) ->
                               lager:notice("Publishing server descriptor to ~s:~b", [inet:ntoa(Address), Port]),

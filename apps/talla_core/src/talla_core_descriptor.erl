@@ -20,13 +20,13 @@ create() ->
     Port = talla_core_config:onion_port(),
     Contact = talla_core_config:contact(),
 
-    PublicIDKey = talla_core_secret_id_key:public_key(),
+    PublicIDKey = talla_core_identity_key:public_key(),
     PublicIDKeyDer = talla_crypto_rsa:der_encode(PublicIDKey),
     PublicIDKeyFingerprint = onion_binary:fingerprint(sha, PublicIDKeyDer),
 
-    PublicOnionKey = talla_core_secret_onion_key:public_key(),
+    PublicOnionKey = talla_core_onion_key:public_key(),
 
-    PublicNTOROnionKey = talla_core_secret_ntor_onion_key:public_key(),
+    PublicNTOROnionKey = talla_core_ntor_key:public_key(),
 
     Timestamp = timestamp(),
     Data = iolist_to_binary([
@@ -50,7 +50,7 @@ create() ->
 
             io_lib:format("router-signature~n", [])
         ]),
-    Signature = talla_core_secret_id_key:sign(Data),
+    Signature = talla_core_identity_key:sign(Data),
     iolist_to_binary([Data,
                       <<"-----BEGIN SIGNATURE-----\n">>,
                       base64encode_and_split(Signature),

@@ -8,7 +8,7 @@
 %%% @doc Secret NTOR Onion Key server
 %%% @end
 %%% ----------------------------------------------------------------------------
--module(talla_core_secret_ntor_onion_key).
+-module(talla_core_ntor_key).
 -behaviour(gen_server).
 
 %% API.
@@ -77,7 +77,7 @@ handle_call(public_key, _From, #state { public_key = PublicKey } = State) ->
     {reply, PublicKey, State};
 
 handle_call({server_handshake, ClientPublicKey}, _From, #state { public_key = PublicKey, secret_key = SecretKey } = State) ->
-    Fingerprint = talla_core_secret_id_key:fingerprint(),
+    Fingerprint = talla_core_identity_key:fingerprint(),
     {reply, onion_ntor:server_handshake(Fingerprint, #{ secret => SecretKey, public => PublicKey }, ClientPublicKey), State};
 
 handle_call(Request, _From, State) ->

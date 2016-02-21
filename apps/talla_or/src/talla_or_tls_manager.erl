@@ -116,7 +116,7 @@ new_certificates() ->
     Nickname1 = onion_random:hostname(8, 20, "www.", ".net"),
     Nickname2 = onion_random:hostname(8, 20, "www.", ".com"),
 
-    IDPublicKey = talla_core_secret_id_key:public_key(),
+    IDPublicKey = talla_core_identity_key:public_key(),
 
     {ok, #{ public := LinkPublicKey } = LinkKeyPair } = onion_rsa:keypair(1024),
     {ok, #{ public := AuthPublicKey } = AuthKeyPair } = onion_rsa:keypair(1024),
@@ -125,9 +125,9 @@ new_certificates() ->
     {ok, IDCertificate}   = new_certificate(IDPublicKey, Nickname2, Nickname2, ?ID_CERTIFICATE_LIFETIME),
     {ok, AuthCertificate} = new_certificate(AuthPublicKey, Nickname1, Nickname2, Lifetime),
 
-    #{ link_certificate => {LinkKeyPair, talla_core_secret_id_key:sign_certificate(LinkCertificate)},
-       id_certificate   => {#{ public => IDPublicKey }, talla_core_secret_id_key:sign_certificate(IDCertificate)},
-       auth_certificate => {AuthKeyPair, talla_core_secret_id_key:sign_certificate(AuthCertificate)} }.
+    #{ link_certificate => {LinkKeyPair, talla_core_identity_key:sign_certificate(LinkCertificate)},
+       id_certificate   => {#{ public => IDPublicKey }, talla_core_identity_key:sign_certificate(IDCertificate)},
+       auth_certificate => {AuthKeyPair, talla_core_identity_key:sign_certificate(AuthCertificate)} }.
 
 %% @private
 -spec new_certificate(PublicKey, Nickname1, Nickname2, Lifetime) -> {ok, Certificate} | {error, Reason}

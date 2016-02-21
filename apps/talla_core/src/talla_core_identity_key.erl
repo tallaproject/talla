@@ -8,7 +8,7 @@
 %%% @doc Secret ID Key server
 %%% @end
 %%% ----------------------------------------------------------------------------
--module(talla_core_secret_id_key).
+-module(talla_core_identity_key).
 -behaviour(gen_server).
 
 %% API.
