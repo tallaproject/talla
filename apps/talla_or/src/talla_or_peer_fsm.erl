@@ -16,21 +16,16 @@
 
          dispatch/2,
 
-         incoming_connection/4,
-         outgoing_connection/5,
+         incoming_connection/3,
 
          disconnected/2
         ]).
 
 %% States.
 -export([idle/2,
-
-         version_handshake/3,
-         certs/3,
-         auth_challenge/3,
-         netinfo/3,
-
-         catch_all/3
+         version_handshake/2,
+         authenticate/2,
+         catch_all/2
         ]).
 
 %% Generic FSM Callbacks.
@@ -51,10 +46,13 @@
         address  :: inet:ip_address(),
         port     :: inet:port_number(),
 
-        tls_info :: proplists:proplist(),
-        tls_cert :: public_key:der_encoded(),
+        authenticated  :: boolean(),
 
-        certs    :: [map()]
+        certs          :: [map()],
+        authenticate   :: map(),
+        auth_challenge :: binary(),
+
+        circuits :: map()
     }).
 
 -spec start_link() -> {ok, Pid} | {error, Reason}
@@ -65,136 +63,122 @@ start_link() ->
     gen_fsm:start_link(?MODULE, [self()], []).
 
 dispatch(Peer, Cell) ->
-    gen_fsm:sync_send_event(Peer, {dispatch, Cell}).
+    gen_fsm:send_event(Peer, {dispatch, Cell}).
 
-incoming_connection(Peer, Address, Port, TLSInfo) ->
-    gen_fsm:send_event(Peer, {incoming_connection, Address, Port, TLSInfo}).
-
-outgoing_connection(Peer, Address, Port, TLSCertificate, TLSInfo) ->
-    gen_fsm:send_event(Peer, {outgoing_connection, Address, Port, TLSCertificate, TLSInfo}).
+incoming_connection(Peer, Address, Port) ->
+    gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
 
 disconnected(Peer, Reason) ->
     gen_fsm:send_all_state_event(Peer, {disconnected, Reason}).
 
 %% @private
-idle({incoming_connection, Address, Port, TLSInfo}, State) ->
-    log(State, notice, "Incoming connection"),
-    {next_state, idle, State#state { type = incoming, address = Address, port = Port, tls_info = TLSInfo } };
-
-idle({outgoing_connection, Address, Port, TLSCertificate, TLSInfo}, State) ->
-    NewState = State#state { type = outgoing, address = Address, port = Port, tls_info = TLSInfo, tls_cert = TLSCertificate },
-    TLSCipherSuite = proplists:get_value(cipher_suite, TLSInfo),
-    TLSProtocol = proplists:get_value(protocol, TLSInfo),
-    log(NewState, notice, "Connected using ~s (~p) ", [TLSProtocol, TLSCipherSuite]),
-    dispatch_cell(NewState, onion_cell:versions()),
+idle({incoming_connection, Address, Port}, State) ->
+    NewState = State#state { type = incoming, address = Address, port = Port },
+    log(NewState, notice, "Incoming connection from ~s:~b", [inet:ntoa(Address), Port]),
     {next_state, version_handshake, NewState}.
 
+%idle({outgoing_connection, Address, Port, TLSCertificate, TLSInfo}, State) ->
+%    NewState = State#state { type = outgoing, address = Address, port = Port, tls_info = TLSInfo, tls_cert = TLSCertificate },
+%    TLSCipherSuite = proplists:get_value(cipher_suite, TLSInfo),
+%    TLSProtocol = proplists:get_value(protocol, TLSInfo),
+%    log(NewState, notice, "Connected using ~s (~p) ", [TLSProtocol, TLSCipherSuite]),
+%    dispatch_cell(NewState, onion_cell:versions()),
+%    {next_state, version_handshake, NewState}.
+
 %% @private
-version_handshake({dispatch, #{ command := versions, payload := Versions } = Cell}, From, #state { type = outgoing } = State) ->
+version_handshake({dispatch, #{ command := versions, payload := Versions } = Cell}, #state { type = incoming, address = Address, peer = Peer } = State) ->
     log_incoming_cell(State, Cell),
+    dispatch_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
             log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
-            gen_fsm:reply(From, {upgrade, NewProtocol}),
-            {next_state, certs, State#state { protocol = NewProtocol }};
+            talla_or_peer:set_protocol(Peer, NewProtocol),
+
+            NewState = State#state { protocol = NewProtocol },
+
+            %% certs
+            {_, LinkCertDER} = talla_or_tls_manager:link_certificate(),
+            LinkCert = #{ type => 1, cert => LinkCertDER },
+
+            {_, IDCertDER} = talla_or_tls_manager:id_certificate(),
+            IDCert   = #{ type => 2, cert => IDCertDER },
+            dispatch_cell(NewState, onion_cell:certs([LinkCert, IDCert])),
+
+            %% auth_challenge
+            Challenge = onion_random:bytes(32),
+            dispatch_cell(NewState, onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}])),
+
+            %% netinfo
+            dispatch_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
+
+            {next_state, authenticate, NewState#state { auth_challenge = Challenge }};
 
         {error, Reason} ->
-            gen_fsm:reply(From, {close, Reason}),
+            talla_or_peer:close(Peer),
             {stop, normal, State}
+    end.
+
+authenticate({dispatch, #{ command := certs, payload := Certs } = Cell}, #state { type = incoming } = State) ->
+    log_incoming_cell(State, Cell),
+    {next_state, authenticate, State#state { certs = Certs }};
+
+authenticate({dispatch, #{ command := authenticate, payload := Authenticate } = Cell}, #state { type = incoming } = State) ->
+    log_incoming_cell(State, Cell),
+    {next_state, authenticate, State#state { authenticate = Authenticate }};
+
+authenticate({dispatch, #{ command := netinfo, payload := _Netinfo } = Cell}, #state { type = incoming, authenticate = Auth, certs = Certs } = State) ->
+    log_incoming_cell(State, Cell),
+    case {Auth, Certs} of
+        {undefined, undefined} ->
+            {next_state, catch_all, State#state { authenticate  = undefined,
+                                                  certs         = undefined,
+                                                  authenticated = false }};
+
+        {_, _} ->
+            %% FIXME(ahf): Authenticate this peer.
+            {next_state, catch_all, State#state { authenticate  = undefined,
+                                                  certs         = undefined,
+                                                  authenticated = true }}
+    end.
+
+catch_all({dispatch, #{ command := create2, circuit := CID, payload := #{ type := ntor, data := <<Fingerprint:20/binary, NTorPublicKey:32/binary, PublicKey:32/binary>> }, circuit := CircuitID} = Cell}, #state { type = incoming, circuits = Circuits } = State) ->
+    log_incoming_cell(State, Cell),
+    {ok, ServerPublicKey}     = onion_rsa:der_encode(talla_core_secret_id_key:public_key()),
+    ServerNTorPublicKey = talla_core_secret_ntor_onion_key:public_key(),
+    OurFingerprint = crypto:hash(sha, ServerPublicKey),
+
+    case {Fingerprint, NTorPublicKey} of
+        {OurFingerprint, ServerNTorPublicKey} ->
+            {Response, KeySeed} = talla_core_secret_ntor_onion_key:server_handshake(PublicKey),
+            dispatch_cell(State, onion_cell:created2(CID, Response)),
+            {next_state, catch_all, State#state { circuits = maps:put(CID, KeySeed, Circuits) }};
+
+        {_, _} ->
+            lager:warning("No match!"),
+            {next_state, catch_all, State}
     end;
 
-version_handshake({dispatch, #{ command := authorize } = Cell}, _From, #state { type = outgoing } = State) ->
+catch_all({dispatch, #{ command := create2, payload := #{ type := ntap }} = Cell}, #state { type = incoming, peer = Peer } = State) ->
     log_incoming_cell(State, Cell),
-    {reply, ok, version_handshake, State};
+    %% FIXME(ahf): implement ...
+    lager:warning("Not implemented: ntap"),
+    talla_or_peer:close(Peer),
+    {stop, normal, State};
 
-version_handshake({dispatch, #{ command := vpadding } = Cell}, _From, #state { type = outgoing } = State) ->
+catch_all({dispatch, #{ command := relay_early, payload := Payload } = Cell}, #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    {reply, ok, version_handshake, State};
+    {next_state, catch_all, State};
 
-version_handshake({dispatch, #{ command := padding } = Cell}, _From, #state { type = outgoing } = State) ->
+catch_all({dispatch, Cell}, #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    {reply, ok, version_handshake, State};
-
-version_handshake({dispatch, #{command := Command } = Cell}, From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    log(State, error, "Received invalid cell ~p during version handshake", [Command]),
-    gen_fsm:reply(From, {close, invalid_command, Command}),
-    {stop, normal, State}.
-
-certs({dispatch, #{ command := certs, payload := Certs } = Cell}, _From, #state { tls_cert = TLSCertificate, type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    {ok, PublicKey} = onion_x509:public_key(TLSCertificate),
-    case onion_certs_cell:validate_server(Certs, PublicKey) of
-        true ->
-            {reply, ok, auth_challenge, State#state { certs = Certs }};
-
-        false ->
-            {reply, {close, invalid_certs}, normal, State}
-    end;
-
-certs({dispatch, #{command := Command } = Cell}, From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    log(State, error, "Invalid Cell: ~w (~p)", [Cell, certs]),
-    gen_fsm:reply(From, {close, invalid_command, Command}),
-    {stop, normal, State}.
-
-auth_challenge({dispatch, #{ command := auth_challenge } = Cell}, _From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-%%    dispatch_cell(Peer, onion_cell:certs()),
-%%    dispatch_cell(Peer, onion_cell:authenticate()),
-    {reply, ok, netinfo, State};
-
-auth_challenge({dispatch, #{command := Command } = Cell}, From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    log(State, error, "Invalid Cell: ~w (~p)", [Cell, auth_challenge]),
-    gen_fsm:reply(From, {close, invalid_command, Command}),
-    {stop, normal, State}.
-
-netinfo({dispatch, #{ command := netinfo } = Cell}, _From, #state { address = Address, type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    dispatch_cell(State, onion_cell:netinfo(Address, [talla_or_config:address()])),
-    {reply, ok, missing, State};
-
-netinfo({dispatch, #{ command := Command } = Cell}, From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    log(State, error, "Invalid Cell: ~w (~p)", [Cell, netinfo]),
-    gen_fsm:reply(From, {close, invalid_command, Command}),
-    {stop, normal, State}.
-
-catch_all({dispatch, Cell}, _From, #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
-    {reply, ok, catch_all, State}.
-
-%connect(Peer, Address, Port) ->
-%    gen_fsm:send_event(Peer, {connecting, Address, Port}).
-
-%connected(Peer, ProtocolVersion, KeyExchange, Cipher, Hash) ->
-%    gen_fsm:send_event(Peer, {connected, ProtocolVersion, KeyExchange, Cipher, Hash}).
-
-%% @private
-%% @private
-%%await_versions_cell({dispatch, #{ command := versions, payload := Versions } = Cell}, _From, #state { peer = _Peer } = State) ->
-%%    lager:notice("Cell: <- ~w", [Cell]),
-%%    OurVersions = ordsets:from_list(onion_cell:supported_cell_versions()),
-%%    TheirVersions = ordsets:from_list(Versions),
-%%    case ordsets:union(OurVersions, TheirVersions) of
-%%        [] ->
-%%            {reply, {close, protocol_mismatch}, await_cell, State};
-%%
-%%        VersionUnion ->
-%%            NewProtocol = lists:last(VersionUnion),
-%%            lager:notice("Negotiated protocol version: ~b", [NewProtocol]),
-%%            {reply, {upgrade, NewProtocol}, await_cell, State#state { protocol = NewProtocol }}
-%%    end.
-
-%% @private
-%%await_cell({dispatch, Cell}, _From, State) ->
-%%    lager:notice("Cell: <- ~w", [Cell]),
-%%    {reply, ok, await_cell, State}.
+    {next_state, catch_all, State}.
 
 %% @private
 init([Peer]) ->
-    {ok, idle, #state { peer = Peer, protocol = 3 }}.
+    {ok, idle, #state { peer          = Peer,
+                        protocol      = 3,
+                        authenticated = false,
+                        circuits      = maps:new() }}.
 
 %% @private
 handle_event({disconnected, Reason}, _StateName, State) ->
@@ -224,13 +208,13 @@ terminate(_Reason, _StateName, _State) ->
     ok.
 
 %% @private
-dispatch_cell(#state { peer = Peer } = State, #{ circuit := CircuitID, command := Command, payload := Payload } = Cell) ->
-    log(State, notice, "-> ~p (Circuit: ~b): ~p", [Command, CircuitID, Payload]),
+dispatch_cell(#state { peer = Peer } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
+    log(State, notice, "-> ~p (Circuit: ~b)", [Command, CircuitID]),
     talla_or_peer:dispatch(Peer, Cell).
 
 %% @private
-log_incoming_cell(State, #{ circuit := CircuitID, command := Command, payload := Payload }) ->
-    log(State, notice, "<- ~p (Circuit: ~b): ~p", [Command, CircuitID, Payload]).
+log_incoming_cell(State, #{ circuit := CircuitID, command := Command }) ->
+    log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]).
 
 %% @private
 log(State, Method, Message) ->
