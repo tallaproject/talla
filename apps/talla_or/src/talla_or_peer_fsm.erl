@@ -151,7 +151,18 @@ catch_all({dispatch, #{ command := create2, circuit := CID, payload := #{ type :
         {OurFingerprint, ServerNTorPublicKey} ->
             {Response, KeySeed} = talla_core_ntor_key:server_handshake(PublicKey),
             dispatch_cell(State, onion_cell:created2(CID, Response)),
-            {next_state, catch_all, State#state { circuits = maps:put(CID, KeySeed, Circuits) }};
+
+            <<FDigest:20/binary, BDigest:20/binary, FKey:16/binary, BKey:16/binary, _/binary>> = onion_kdf:hkdf(KeySeed,
+                                                                                                      <<"ntor-curve25519-sha256-1:key_extract">>,
+                                                                                                      <<"ntor-curve25519-sha256-1:key_expand">>,
+                                                                                                      100),
+            {next_state, catch_all, State#state { circuits = maps:put(CID, #{ f_digest => crypto:hash_update(crypto:hash_init(sha), FDigest),
+                                                                              b_digest => crypto:hash_update(crypto:hash_init(sha), BDigest),
+                                                                              f_key    => FKey,
+                                                                              b_key    => BKey,
+                                                                              forward  => crypto:stream_init(aes_ctr, FKey, <<0:128>>),
+                                                                              backward => crypto:stream_init(aes_ctr, BKey, <<0:128>>)
+                                                                            }, Circuits) }};
 
         {_, _} ->
             lager:warning("No match!"),
@@ -165,9 +176,17 @@ catch_all({dispatch, #{ command := create2, payload := #{ type := ntap }} = Cell
     talla_or_peer:close(Peer),
     {stop, normal, State};
 
-catch_all({dispatch, #{ command := relay_early, payload := Payload } = Cell}, #state { type = incoming } = State) ->
+catch_all({dispatch, #{ circuit := CID, command := relay_early, payload := #{ data := <<Payload/binary>> } } = Cell}, #state { type = incoming, circuits = Circuits, peer = Peer } = State) ->
     log_incoming_cell(State, Cell),
-    {next_state, catch_all, State};
+    case maps:get(CID, Circuits, not_found) of
+        not_found ->
+            lager:warning("Circuit ~b not found", [CID]),
+            {next_state, catch_all, State};
+
+        #{ forward := Forward, backward := Backward } = Map ->
+            lager:notice("Data: ~w", [Map]),
+            lager:notice("Data: ~w", [Payload])
+    end;
 
 catch_all({dispatch, Cell}, #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
