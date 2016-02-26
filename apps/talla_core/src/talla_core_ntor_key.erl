@@ -14,7 +14,7 @@
 %% API.
 -export([start_link/0,
          public_key/0,
-         server_handshake/1
+         server_handshake/2
         ]).
 
 %% Generic Server Callbacks.
@@ -41,11 +41,12 @@ start_link() ->
 public_key() ->
     gen_server:call(?SERVER, public_key).
 
--spec server_handshake(ClientPublicKey) -> term()
+-spec server_handshake(ClientPublicKey, Length) -> term()
     when
-        ClientPublicKey :: onion_x25519:public_key().
-server_handshake(ClientPublicKey) ->
-    gen_server:call(?SERVER, {server_handshake, ClientPublicKey}).
+        ClientPublicKey :: onion_x25519:public_key(),
+        Length          :: non_neg_integer().
+server_handshake(ClientPublicKey, Length) ->
+    gen_server:call(?SERVER, {server_handshake, ClientPublicKey, Length}).
 
 %% @private
 init(_Args) ->
@@ -76,9 +77,9 @@ init(_Args) ->
 handle_call(public_key, _From, #state { public_key = PublicKey } = State) ->
     {reply, PublicKey, State};
 
-handle_call({server_handshake, ClientPublicKey}, _From, #state { public_key = PublicKey, secret_key = SecretKey } = State) ->
+handle_call({server_handshake, ClientPublicKey, Length}, _From, #state { public_key = PublicKey, secret_key = SecretKey } = State) ->
     Fingerprint = talla_core_identity_key:fingerprint(),
-    {reply, onion_ntor:server_handshake(Fingerprint, #{ secret => SecretKey, public => PublicKey }, ClientPublicKey), State};
+    {reply, onion_ntor:server_handshake(Fingerprint, #{ secret => SecretKey, public => PublicKey }, ClientPublicKey, Length), State};
 
 handle_call(Request, _From, State) ->
     lager:warning("Unhandled call: ~p", [Request]),
