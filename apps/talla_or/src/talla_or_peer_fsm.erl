@@ -149,13 +149,9 @@ catch_all({dispatch, #{ command := create2, circuit := CID, payload := #{ type :
 
     case {Fingerprint, NTorPublicKey} of
         {OurFingerprint, ServerNTorPublicKey} ->
-            {Response, KeySeed} = talla_core_ntor_key:server_handshake(PublicKey),
+            {Response, Key} = talla_core_ntor_key:server_handshake(PublicKey, 72),
             dispatch_cell(State, onion_cell:created2(CID, Response)),
-
-            <<FDigest:20/binary, BDigest:20/binary, FKey:16/binary, BKey:16/binary, _/binary>> = onion_kdf:hkdf(KeySeed,
-                                                                                                      <<"ntor-curve25519-sha256-1:key_extract">>,
-                                                                                                      <<"ntor-curve25519-sha256-1:key_expand">>,
-                                                                                                      100),
+            <<FDigest:20/binary, BDigest:20/binary, FKey:16/binary, BKey:16/binary>> = Key,
             {next_state, catch_all, State#state { circuits = maps:put(CID, #{ f_digest => crypto:hash_update(crypto:hash_init(sha), FDigest),
                                                                               b_digest => crypto:hash_update(crypto:hash_init(sha), BDigest),
                                                                               f_key    => FKey,
@@ -184,8 +180,9 @@ catch_all({dispatch, #{ circuit := CID, command := relay_early, payload := #{ da
             {next_state, catch_all, State};
 
         #{ forward := Forward, backward := Backward } = Map ->
-            lager:notice("Data: ~w", [Map]),
-            lager:notice("Data: ~w", [Payload])
+            lager:notice("Data Enc: ~w", [Payload]),
+            lager:notice("Data Dec: ~w", [onion_aes:decrypt(Forward, Payload)]),
+            {next_state, catch_all, State}
     end;
 
 catch_all({dispatch, Cell}, #state { type = incoming } = State) ->
