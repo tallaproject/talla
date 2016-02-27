@@ -14,7 +14,8 @@
 %% API.
 -export([start_link/0,
 
-         dispatch/2,
+         incoming_cell/2,
+         outgoing_cell/2,
 
          incoming_connection/3,
 
@@ -23,9 +24,13 @@
 
 %% States.
 -export([idle/2,
-         version_handshake/2,
-         authenticate/2,
-         catch_all/2
+
+         handshaking/2,
+
+         authenticating/2,
+
+         authenticated/2,
+         unauthenticated/2
         ]).
 
 %% Generic FSM Callbacks.
@@ -46,14 +51,20 @@
         address  :: inet:ip_address(),
         port     :: inet:port_number(),
 
-        authenticated  :: boolean(),
-
         certs          :: [map()],
         authenticate   :: map(),
         auth_challenge :: binary(),
 
         circuits :: map()
     }).
+
+-define(CELL(Cell), {incoming_cell, Cell}).
+
+-define(CELL(CircuitID, Command), ?CELL(#{ circuit := CircuitID,
+                                           command := Command } = Cell)).
+-define(CELL(CircuitID, Command, Payload), ?CELL(#{ circuit := CircuitID,
+                                                    command := Command,
+                                                    payload := Payload } = Cell)).
 
 -spec start_link() -> {ok, Pid} | {error, Reason}
     when
@@ -62,8 +73,11 @@
 start_link() ->
     gen_fsm:start_link(?MODULE, [self()], []).
 
-dispatch(Peer, Cell) ->
-    gen_fsm:send_event(Peer, {dispatch, Cell}).
+incoming_cell(Peer, Cell) ->
+    gen_fsm:send_event(Peer, {incoming_cell, Cell}).
+
+outgoing_cell(Peer, Cell) ->
+    gen_fsm:send_event(Peer, {outgoing_cell, Cell}).
 
 incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
@@ -75,18 +89,10 @@ disconnected(Peer, Reason) ->
 idle({incoming_connection, Address, Port}, State) ->
     NewState = State#state { type = incoming, address = Address, port = Port },
     log(NewState, notice, "Incoming connection from ~s:~b", [inet:ntoa(Address), Port]),
-    {next_state, version_handshake, NewState}.
-
-%idle({outgoing_connection, Address, Port, TLSCertificate, TLSInfo}, State) ->
-%    NewState = State#state { type = outgoing, address = Address, port = Port, tls_info = TLSInfo, tls_cert = TLSCertificate },
-%    TLSCipherSuite = proplists:get_value(cipher_suite, TLSInfo),
-%    TLSProtocol = proplists:get_value(protocol, TLSInfo),
-%    log(NewState, notice, "Connected using ~s (~p) ", [TLSProtocol, TLSCipherSuite]),
-%    dispatch_cell(NewState, onion_cell:versions()),
-%    {next_state, version_handshake, NewState}.
+    {next_state, handshaking, NewState}.
 
 %% @private
-version_handshake({dispatch, #{ command := versions, payload := Versions } = Cell}, #state { type = incoming, address = Address, peer = Peer } = State) ->
+handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Address, peer = Peer } = State) ->
     log_incoming_cell(State, Cell),
     dispatch_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
@@ -111,90 +117,65 @@ version_handshake({dispatch, #{ command := versions, payload := Versions } = Cel
             %% netinfo
             dispatch_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
 
-            {next_state, authenticate, NewState#state { auth_challenge = Challenge }};
+            {next_state, authenticating, NewState#state { auth_challenge = Challenge }};
 
         {error, Reason} ->
             talla_or_peer:close(Peer),
             {stop, normal, State}
     end.
 
-authenticate({dispatch, #{ command := certs, payload := Certs } = Cell}, #state { type = incoming } = State) ->
+authenticating(?CELL(0, certs, Certs), #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    {next_state, authenticate, State#state { certs = Certs }};
+    {next_state, authenticating, State#state { certs = Certs }};
 
-authenticate({dispatch, #{ command := authenticate, payload := Authenticate } = Cell}, #state { type = incoming } = State) ->
+authenticating(?CELL(0, authenticate, Authenticate), #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    {next_state, authenticate, State#state { authenticate = Authenticate }};
+    {next_state, authenticating, State#state { authenticate = Authenticate }};
 
-authenticate({dispatch, #{ command := netinfo, payload := _Netinfo } = Cell}, #state { type = incoming, authenticate = Auth, certs = Certs } = State) ->
+authenticating(?CELL(0, netinfo, _Netinfo), #state { type         = incoming,
+                                                     authenticate = Auth,
+                                                     certs        = Certs } = State) ->
     log_incoming_cell(State, Cell),
     case {Auth, Certs} of
         {undefined, undefined} ->
-            {next_state, catch_all, State#state { authenticate  = undefined,
-                                                  certs         = undefined,
-                                                  authenticated = false }};
+            {next_state, unauthenticated, State#state { authenticate = undefined,
+                                                        certs        = undefined }};
 
         {_, _} ->
             %% FIXME(ahf): Authenticate this peer.
-            {next_state, catch_all, State#state { authenticate  = undefined,
-                                                  certs         = undefined,
-                                                  authenticated = true }}
+            {next_state, authenticated, State#state { authenticate = undefined,
+                                                      certs        = undefined }}
     end.
 
-catch_all({dispatch, #{ command := create2, circuit := CID, payload := #{ type := ntor, data := <<Fingerprint:20/binary, NTorPublicKey:32/binary, PublicKey:32/binary>> }, circuit := CircuitID} = Cell}, #state { type = incoming, circuits = Circuits } = State) ->
+authenticated(?CELL(CircuitID, create2), #state { type = incoming } = State) when CircuitID =/= 0 ->
+    {next_state, authenticated, forward_circuit_cell(State, Cell)};
+
+authenticated(?CELL(CircuitID, destroy), #state { type = incoming } = State) when CircuitID =/= 0 ->
+    {next_state, authenticated, forward_circuit_cell(State, Cell)};
+
+authenticated(?CELL(CircuitID, relay_early), #state { type = incoming } = State) when CircuitID =/= 0 ->
+    {next_state, authenticated, forward_circuit_cell(State, Cell)};
+
+authenticated(?CELL(CircuitID, relay), #state { type = incoming } = State) when CircuitID =/= 0 ->
+    {next_state, authenticated, forward_circuit_cell(State, Cell)};
+
+authenticated(?CELL(Cell), #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    {ok, ServerPublicKey}     = onion_rsa:der_encode(talla_core_identity_key:public_key()),
-    ServerNTorPublicKey = talla_core_ntor_key:public_key(),
-    OurFingerprint = crypto:hash(sha, ServerPublicKey),
+    {next_state, authenticated, State};
 
-    case {Fingerprint, NTorPublicKey} of
-        {OurFingerprint, ServerNTorPublicKey} ->
-            {Response, Key} = talla_core_ntor_key:server_handshake(PublicKey, 72),
-            dispatch_cell(State, onion_cell:created2(CID, Response)),
-            <<FDigest:20/binary, BDigest:20/binary, FKey:16/binary, BKey:16/binary>> = Key,
-            {next_state, catch_all, State#state { circuits = maps:put(CID, #{ f_digest => crypto:hash_update(crypto:hash_init(sha), FDigest),
-                                                                              b_digest => crypto:hash_update(crypto:hash_init(sha), BDigest),
-                                                                              f_key    => FKey,
-                                                                              b_key    => BKey,
-                                                                              forward  => crypto:stream_init(aes_ctr, FKey, <<0:128>>),
-                                                                              backward => crypto:stream_init(aes_ctr, BKey, <<0:128>>)
-                                                                            }, Circuits) }};
+authenticated({outgoing_cell, Cell}, #state { type = incoming } = State) ->
+    dispatch_cell(State, Cell),
+    {next_state, authenticated, State}.
 
-        {_, _} ->
-            lager:warning("No match!"),
-            {next_state, catch_all, State}
-    end;
-
-catch_all({dispatch, #{ command := create2, payload := #{ type := ntap }} = Cell}, #state { type = incoming, peer = Peer } = State) ->
+unauthenticated(?CELL(Cell), #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
-    %% FIXME(ahf): implement ...
-    lager:warning("Not implemented: ntap"),
-    talla_or_peer:close(Peer),
-    {stop, normal, State};
-
-catch_all({dispatch, #{ circuit := CID, command := relay_early, payload := #{ data := <<Payload/binary>> } } = Cell}, #state { type = incoming, circuits = Circuits, peer = Peer } = State) ->
-    log_incoming_cell(State, Cell),
-    case maps:get(CID, Circuits, not_found) of
-        not_found ->
-            lager:warning("Circuit ~b not found", [CID]),
-            {next_state, catch_all, State};
-
-        #{ forward := Forward, backward := Backward } = Map ->
-            lager:notice("Data Enc: ~w", [Payload]),
-            lager:notice("Data Dec: ~w", [onion_aes:decrypt(Forward, Payload)]),
-            {next_state, catch_all, State}
-    end;
-
-catch_all({dispatch, Cell}, #state { type = incoming } = State) ->
-    log_incoming_cell(State, Cell),
-    {next_state, catch_all, State}.
+    {next_state, authenticated, State}.
 
 %% @private
 init([Peer]) ->
-    {ok, idle, #state { peer          = Peer,
-                        protocol      = 3,
-                        authenticated = false,
-                        circuits      = maps:new() }}.
+    {ok, idle, #state { peer     = Peer,
+                        protocol = 3,
+                        circuits = maps:new() }}.
 
 %% @private
 handle_event({disconnected, Reason}, _StateName, State) ->
@@ -225,12 +206,26 @@ terminate(_Reason, _StateName, _State) ->
 
 %% @private
 dispatch_cell(#state { peer = Peer } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
-    log(State, notice, "-> ~p (Circuit: ~b)", [Command, CircuitID]),
+    log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]),
     talla_or_peer:dispatch(Peer, Cell).
 
 %% @private
+forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
+    log(State, notice, "=> ~p (Circuit: ~b)", [Command, CircuitID]),
+    case maps:get(CircuitID, Circuits, not_found) of
+        not_found ->
+            {ok, Pid} = talla_or_circuit_sup:start_circuit(CircuitID, self()),
+            talla_or_circuit:incoming_cell(Pid, Cell),
+            State#state { circuits = maps:put(CircuitID, Pid, Circuits) };
+
+        Pid ->
+            talla_or_circuit:incoming_cell(Pid, Cell),
+            State
+    end.
+
+%% @private
 log_incoming_cell(State, #{ circuit := CircuitID, command := Command }) ->
-    log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]).
+    log(State, notice, "-> ~p (Circuit: ~b)", [Command, CircuitID]).
 
 %% @private
 log(State, Method, Message) ->

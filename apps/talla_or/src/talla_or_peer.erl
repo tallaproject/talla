@@ -199,7 +199,7 @@ send(Socket, Data) ->
 process_stream_chunk(PeerFSM, Protocol, Data) ->
     case onion_cell:decode(Protocol, Data) of
         {ok, Cell, NewData} ->
-            talla_or_peer_fsm:dispatch(PeerFSM, Cell),
+            talla_or_peer_fsm:incoming_cell(PeerFSM, Cell),
             process_stream_chunk(PeerFSM, Protocol, NewData);
 
         {error, insufficient_data} ->

@@ -13,7 +13,7 @@
 
 %% API.
 -export([start_link/0,
-         start_circuit/1
+         start_circuit/2
         ]).
 
 %% Supervisor callbacks.
@@ -30,13 +30,14 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_circuit(CircuitID) -> {ok, Pid} | {error, Reason}
+-spec start_circuit(CircuitID, Peer) -> {ok, Pid} | {error, Reason}
     when
         CircuitID :: non_neg_integer(),
+        Peer      :: pid(),
         Pid       :: pid(),
         Reason    :: term().
-start_circuit(CircuitID) ->
-    supervisor:start_child(?SERVER, [CircuitID]).
+start_circuit(CircuitID, Peer) ->
+    supervisor:start_child(?SERVER, [CircuitID, Peer]).
 
 %% @private
 -spec init([]) -> {ok, {{simple_one_for_one, non_neg_integer(), non_neg_integer()}, []}}.
