@@ -205,9 +205,9 @@ terminate(_Reason, _StateName, _State) ->
     ok.
 
 %% @private
-dispatch_cell(#state { peer = Peer } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
+dispatch_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
     log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]),
-    talla_or_peer:dispatch(Peer, Cell).
+    talla_or_peer:dispatch(Peer, Protocol, Cell).
 
 %% @private
 forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := CircuitID, command := Command } = Cell) ->

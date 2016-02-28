@@ -14,7 +14,7 @@
 %% API.
 -export([start_link/0,
          connect/3,
-         dispatch/2,
+         dispatch/3,
          set_protocol/2,
          close/1
         ]).
@@ -55,12 +55,13 @@ start_link() ->
 connect(Peer, Address, Port) ->
     gen_server:cast(Peer, {connect, Address, Port}).
 
--spec dispatch(Peer, Cell) -> ok
+-spec dispatch(Peer, Protocol, Cell) -> ok
     when
-        Peer :: pid(),
-        Cell :: onion_cell:cell().
-dispatch(Peer, Cell) ->
-    gen_server:cast(Peer, {dispatch, Cell}).
+        Peer     :: pid(),
+        Protocol :: onion_protocol:version(),
+        Cell     :: onion_cell:cell().
+dispatch(Peer, Protocol, Cell) ->
+    gen_server:cast(Peer, {dispatch, Protocol, Cell}).
 
 -spec set_protocol(Peer, Protocol) -> ok
     when
@@ -128,7 +129,7 @@ handle_cast({connect, Address, Port}, #state { fsm = FSM, socket = undefined } =
             {stop, Error, State}
     end;
 
-handle_cast({dispatch, Cell}, #state { protocol = Protocol, socket = Socket } = State) ->
+handle_cast({dispatch, Protocol, Cell}, #state { socket = Socket } = State) ->
     case onion_cell:encode(Protocol, Cell) of
         {ok, CellData} ->
             send(Socket, CellData);
