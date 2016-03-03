@@ -7,10 +7,10 @@
     {applications, [
         crypto,
         kernel,
-        stdlib,
-        sasl,
+        lager,
         onion,
-        lager
+        sasl,
+        stdlib
    ]}
 ]}.
 
