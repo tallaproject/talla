@@ -19,8 +19,15 @@
          close/1
         ]).
 
+%% Private API.
+-export([lookup/1,
+         await/1
+        ]).
+
 %% Ranch API.
--export([start_link/4, init/4]).
+-export([start_link/4,
+         init/4
+        ]).
 
 %% Generic Server Callbacks.
 -export([init/1,
@@ -77,6 +84,24 @@ close(Peer) ->
     gen_server:cast(Peer, close).
 
 %% @private
+-spec lookup(Socket) -> {ok, Pid} | {error, Reason}
+    when
+        Socket :: ssl:socket(),
+        Pid    :: pid(),
+        Reason :: term().
+lookup(Socket) ->
+    onion_registry:lookup(name(Socket)).
+
+%% @private
+-spec await(Socket) -> {ok, Pid} | {error, Reason}
+    when
+        Socket :: ssl:socket(),
+        Pid    :: pid(),
+        Reason :: term().
+await(Socket) ->
+    onion_registry:await(name(Socket)).
+
+%% @private
 start_link(Ref, Socket, Transport, Options) ->
     proc_lib:start_link(?MODULE, init, [Ref, Socket, Transport, Options]).
 
@@ -85,6 +110,8 @@ init(Ref, Socket, _Transport, _Options) ->
     ok = proc_lib:init_ack({ok, self()}),
     ok = ranch:accept_ack(Ref),
     ok = ack_socket(Socket),
+
+    register(Socket),
 
     {ok, FSM} = talla_or_peer_fsm:start_link(),
     {ok, {Address, Port}} = ssl:peername(Socket),
@@ -117,6 +144,8 @@ handle_call(Request, _From, State) ->
 handle_cast({connect, Address, Port}, #state { fsm = FSM, socket = undefined } = State) ->
     case ssl:connect(Address, Port, [binary, {packet, 0}, {active, once}]) of
         {ok, Socket} ->
+            register(Socket),
+
             {ok, TLSCertificate} = ssl:peercert(Socket),
             {ok, TLSInfo} = ssl:connection_information(Socket),
 
@@ -209,3 +238,17 @@ process_stream_chunk(PeerFSM, Protocol, Data) ->
         {error, _} = Error ->
             Error
     end.
+
+%% @private
+-spec name(Socket) -> term()
+    when
+        Socket :: ssl:socket().
+name(Socket) ->
+    {?MODULE, Socket}.
+
+%% @private
+-spec register(Socket) -> term()
+    when
+        Socket :: ssl:socket().
+register(Socket) ->
+    onion_registry:register(name(Socket)).
