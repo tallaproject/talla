@@ -66,7 +66,7 @@ port() ->
 %% @doc Get the exit policy.
 -spec exit_policy() -> onion_descriptor:exit_policy().
 exit_policy() ->
-    onion_config:get_value(talla_or, exit_policy, [{reject, "*:*"}]).
+    onion_config:get_value(talla_or, exit_policy, onion_exit_policy:default()).
 
 %% @doc Get the maximum number of incoming connections.
 -spec max_connections() -> non_neg_integer().
