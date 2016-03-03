@@ -41,4 +41,8 @@
   {git,"https://github.com/ninenines/ranch.git",
        {ref,"741bfb73ca663394ecf7a73410506d66f01985a6"}},
   0},
+ {<<"rlimit">>,
+  {git,"git@lab.baconsvin.org:talla/rlimit.git",
+       {ref,"df798ffd0814b007ea02af0d7820b7deb393abae"}},
+  0},
  {<<"ssl_verify_hostname">>,{pkg,<<"ssl_verify_hostname">>,<<"1.0.5">>},1}].
