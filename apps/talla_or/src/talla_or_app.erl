@@ -19,6 +19,7 @@ start(_Type, _Args) ->
     case talla_or_sup:start_link() of
         {ok, _} = Result ->
             ok = maybe_start_relay(),
+            ok = talla_or_limit:init(),
             Result;
 
         {error, _} = Error ->

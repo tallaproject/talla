@@ -17,7 +17,8 @@
          address/0,
          port/0,
          exit_policy/0,
-         max_connections/0
+         max_connections/0,
+         bandwidth_rate/0
         ]).
 
 %% @doc Enable the relay or not.
@@ -67,6 +68,11 @@ port() ->
 -spec exit_policy() -> onion_descriptor:exit_policy().
 exit_policy() ->
     onion_config:get_value(talla_or, exit_policy, onion_exit_policy:default()).
+
+%% @doc Get the bandwidth rate.
+-spec bandwidth_rate() -> non_neg_integer() | infinity.
+bandwidth_rate() ->
+    onion_config:get_value(talla_or, bandwidth_rate, infinity).
 
 %% @doc Get the maximum number of incoming connections.
 -spec max_connections() -> non_neg_integer().

@@ -16,7 +16,8 @@
          connect/3,
          dispatch/3,
          set_protocol/2,
-         close/1
+         close/1,
+         incoming_packet/2
         ]).
 
 %% Private API.
@@ -44,7 +45,12 @@
         socket       :: ssl:socket() | undefined,
         continuation :: binary(),
         protocol     :: onion_cell:version(),
-        fsm          :: pid()
+
+        fsm          :: pid(),  %% talla_or_peer_fsm.
+        sender       :: pid(),  %% talla_or_peer_send.
+        receiver     :: pid(),  %% talla_or_peer_recv.
+
+        children     :: ordsets:ordset(pid())
     }).
 
 -spec start_link() -> {ok, Peer} | {error, Reason}
@@ -83,6 +89,13 @@ set_protocol(Peer, Protocol) ->
 close(Peer) ->
     gen_server:cast(Peer, close).
 
+-spec incoming_packet(Peer, Packet) -> ok
+    when
+        Peer   :: pid(),
+        Packet :: binary().
+incoming_packet(Peer, Packet) ->
+    gen_server:cast(Peer, {incoming_packet, Packet}).
+
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
     when
@@ -109,11 +122,17 @@ start_link(Ref, Socket, Transport, Options) ->
 init(Ref, Socket, _Transport, _Options) ->
     ok = proc_lib:init_ack({ok, self()}),
     ok = ranch:accept_ack(Ref),
-    ok = ack_socket(Socket),
 
     register(Socket),
 
-    {ok, FSM} = talla_or_peer_fsm:start_link(),
+    {ok, FSM}      = talla_or_peer_fsm:start_link(),
+    {ok, Sender}   = talla_or_peer_send:start_link(Socket),
+    {ok, Receiver} = talla_or_peer_recv:start_link(Socket),
+
+    monitor(process, FSM),
+    monitor(process, Sender),
+    monitor(process, Receiver),
+
     {ok, {Address, Port}} = ssl:peername(Socket),
 
     talla_or_peer_fsm:incoming_connection(FSM, Address, Port),
@@ -122,17 +141,18 @@ init(Ref, Socket, _Transport, _Options) ->
                                           socket       = Socket,
                                           continuation = <<>>,
                                           protocol     = 3,
-                                          fsm          = FSM
+                                          fsm          = FSM,
+                                          sender       = Sender,
+                                          receiver     = Receiver,
+                                          children     = ordsets:from_list([FSM, Sender, Receiver])
                                         }).
 
 %% @private
 init([]) ->
-    {ok, FSM} = talla_or_peer_fsm:start_link(),
     {ok, #state {
             socket       = undefined,
             continuation = <<>>,
-            protocol     = 3,
-            fsm          = FSM
+            protocol     = 3
            }}.
 
 %% @private
@@ -141,31 +161,39 @@ handle_call(Request, _From, State) ->
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({connect, Address, Port}, #state { fsm = FSM, socket = undefined } = State) ->
+handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
     case ssl:connect(Address, Port, [binary, {packet, 0}, {active, once}]) of
         {ok, Socket} ->
             register(Socket),
+
+            {ok, FSM}      = talla_or_peer_fsm:start_link(),
+            {ok, Sender}   = talla_or_peer_send:start_link(Socket),
+            {ok, Receiver} = talla_or_peer_recv:start_link(Socket),
+
+            monitor(process, FSM),
+            monitor(process, Sender),
+            monitor(process, Receiver),
 
             {ok, TLSCertificate} = ssl:peercert(Socket),
             {ok, TLSInfo} = ssl:connection_information(Socket),
 
             talla_or_peer_fsm:outgoing_connection(FSM, Address, Port, TLSCertificate, TLSInfo),
 
-            {noreply, State#state { socket = Socket }};
+            {noreply, State#state {
+                        socket   = Socket,
+                        fsm      = FSM,
+                        sender   = Sender,
+                        receiver = Receiver,
+                        children = ordsets:from_list([FSM, Sender, Receiver])
+                       }};
 
         {error, _} = Error ->
             lager:warning("Unable to connect to ~s:~b", [inet:ntoa(Address), Port]),
             {stop, Error, State}
     end;
 
-handle_cast({dispatch, Protocol, Cell}, #state { socket = Socket } = State) ->
-    case onion_cell:encode(Protocol, Cell) of
-        {ok, CellData} ->
-            send(Socket, CellData);
-
-        {error, _} ->
-            lager:warning("Trying to send bad cell: ~w", [Cell])
-    end,
+handle_cast({dispatch, Version, Cell}, #state { sender = Sender } = State) ->
+    talla_or_peer_send:dispatch(Sender, Version, Cell),
     {noreply, State};
 
 handle_cast({set_protocol, Protocol}, State) ->
@@ -175,13 +203,7 @@ handle_cast({set_protocol, Protocol}, State) ->
 handle_cast(close, State) ->
     {stop, normal, State};
 
-handle_cast(Message, State) ->
-    lager:warning("Unhandled cast: ~p", [Message]),
-    {noreply, State}.
-
-%% @private
-handle_info({ssl, Socket, Packet}, #state { socket = Socket, protocol = Protocol, fsm = FSM, continuation = Continuation } = State) ->
-    ok = ack_socket(Socket),
+handle_cast({incoming_packet, Packet}, #state { continuation = Continuation, protocol = Protocol, fsm = FSM } = State) ->
     Data = <<Continuation/binary, Packet/binary>>,
     case process_stream_chunk(FSM, Protocol, Data) of
         {ok, NewContinuation} ->
@@ -191,12 +213,16 @@ handle_info({ssl, Socket, Packet}, #state { socket = Socket, protocol = Protocol
             {stop, Error, State}
     end;
 
-handle_info({ssl_error, _Socket, Reason}, #state { fsm = FSM } = State) ->
-    talla_or_peer_fsm:disconnected(FSM, Reason),
-    {stop, normal, State};
+handle_cast(Message, State) ->
+    lager:warning("Unhandled cast: ~p", [Message]),
+    {noreply, State}.
 
-handle_info({ssl_closed, _Socket}, #state { fsm = FSM } = State) ->
-    talla_or_peer_fsm:disconnected(FSM, closed),
+%% @private
+handle_info({'DOWN', _Ref, process, Pid, normal}, #state { children = Children } = State) ->
+    true = ordsets:is_element(Pid, Children),
+
+    [Child ! stop || Child <- Children],
+
     {stop, normal, State};
 
 handle_info(Info, State) ->
@@ -210,20 +236,6 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
-
-%% @private
--spec ack_socket(Socket :: ssl:socket()) -> ok.
-ack_socket(Socket) ->
-    ssl:setopts(Socket, [{active, once}]).
-
-%% @private
--spec send(Socket, Data) -> ok | {error, Reason}
-    when
-        Socket :: ssl:socket(),
-        Data   :: iolist(),
-        Reason :: term().
-send(Socket, Data) ->
-    ssl:send(Socket, Data).
 
 %% @private
 process_stream_chunk(PeerFSM, Protocol, Data) ->

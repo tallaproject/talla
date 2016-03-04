@@ -17,9 +17,7 @@
          incoming_cell/2,
          outgoing_cell/2,
 
-         incoming_connection/3,
-
-         disconnected/2
+         incoming_connection/3
         ]).
 
 %% States.
@@ -81,9 +79,6 @@ outgoing_cell(Peer, Cell) ->
 
 incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
-
-disconnected(Peer, Reason) ->
-    gen_fsm:send_all_state_event(Peer, {disconnected, Reason}).
 
 %% @private
 idle({incoming_connection, Address, Port}, State) ->
@@ -178,10 +173,6 @@ init([Peer]) ->
                         circuits = maps:new() }}.
 
 %% @private
-handle_event({disconnected, Reason}, _StateName, State) ->
-    log(State, notice, "Disconnected: ~p", [Reason]),
-    {stop, normal, State};
-
 handle_event(Request, StateName, State) ->
     log(State, warning, "Unhandled event: ~p", [Request]),
     {next_state, StateName, State}.
@@ -192,6 +183,10 @@ handle_sync_event(Request, _From, StateName, State) ->
     {next_state, StateName, State}.
 
 %% @private
+handle_info(stop, _StateName, State) ->
+    log(State, notice, "Disconnected", []),
+    {stop, normal, State};
+
 handle_info(Info, StateName, State) ->
     log(State, warning, "Unhandled info: ~p", [Info]),
     {next_state, StateName, State}.
