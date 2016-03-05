@@ -47,6 +47,6 @@
   0},
  {<<"rlimit">>,
   {git,"git@lab.baconsvin.org:talla/rlimit.git",
-       {ref,"df798ffd0814b007ea02af0d7820b7deb393abae"}},
+       {ref,"3f8e0373cd279d02334085372c36eb1618422857"}},
   0},
  {<<"ssl_verify_hostname">>,{pkg,<<"ssl_verify_hostname">>,<<"1.0.5">>},1}].
