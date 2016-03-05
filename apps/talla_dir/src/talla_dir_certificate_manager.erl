@@ -48,8 +48,7 @@ handle_cast(Message, State) ->
 
 %% @private
 handle_info({http_client_response, 200, _Headers, #{ nickname := Nickname, fingerprint := Fingerprint } = Authority, {document, Document}}, State) ->
-    lager:notice("Got document from ~s (~s)", [Nickname, Fingerprint]),
-    lager:notice("~p", [validate_document(Authority, Document)]),
+    lager:notice("Got certificate document from ~s (~s)", [Nickname, Fingerprint]),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -66,7 +65,7 @@ code_change(_OldVersion, State, _Extra) ->
 
 %% @private
 download(#{ nickname := Nickname, address := Address, dir_port := Port, fingerprint := Fingerprint } = Authority) ->
-    lager:notice("Downloading certificate for ~s (~s)", [Nickname, Fingerprint]),
+    lager:notice("Downloading certificate document for ~s (~s)", [Nickname, Fingerprint]),
     talla_dir_http_client:get(Address, Port, "keys/authority.z", Authority).
 
 %% @private
@@ -83,7 +82,6 @@ validate_document(_Authority, Document) ->
 
         true
     catch X:Y ->
-        lager:warning("XXX: ~p/~p", [X, Y]),
         false
     end.
 
