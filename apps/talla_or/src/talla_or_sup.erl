@@ -31,6 +31,5 @@ start_link() ->
 init([]) ->
     {ok, {{one_for_one, 10, 10}, [
             ?CHILD(talla_or_tls_manager, worker),
-            ?CHILD(talla_or_peer_sup, supervisor),
-            ?CHILD(talla_or_circuit_sup, supervisor)
+            ?CHILD(talla_or_peer_sup, supervisor)
         ]}}.
