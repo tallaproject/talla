@@ -231,11 +231,11 @@ forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := Circu
     log(State, notice, "=> ~p (Circuit: ~b)", [Command, CircuitID]),
     case maps:get(CircuitID, Circuits, not_found) of
         not_found ->
-            {ok, Pid} = talla_or_circuit_sup:start_circuit(CircuitID, self()),
+            {ok, Pid} = talla_or_circuit:start_link(CircuitID, self()),
             talla_or_circuit:incoming_cell(Pid, Cell),
             State#state { circuits = maps:put(CircuitID, Pid, Circuits) };
 
-        Pid ->
+        Pid when is_pid(Pid) ->
             talla_or_circuit:incoming_cell(Pid, Cell),
             State
     end.
