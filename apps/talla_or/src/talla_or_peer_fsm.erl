@@ -139,8 +139,8 @@ handshaking(?CELL(0, versions, Versions), #state { type = outgoing, address = Ad
 
             {next_state, handshaking, NewState};
 
-        {error, Reason} ->
-            {stop, normal, State}
+        {error, _} = Error ->
+            {stop, Error, State}
     end;
 
 handshaking(?CELL(Cell), #state { type = outgoing } = State) ->
