@@ -82,6 +82,8 @@ handle_cast(Message, State) ->
 handle_info({limit, continue}, #state { socket = Socket, peer = Peer } = State) ->
     case recv(Socket) of
         {ok, Packet} ->
+            lager:debug("Read packet: ~w", [Packet]),
+
             PacketSize = byte_size(Packet),
             NewLimit   = talla_or_limit:recv(PacketSize),
 

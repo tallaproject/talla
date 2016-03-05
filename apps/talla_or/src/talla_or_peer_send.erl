@@ -112,6 +112,8 @@ handle_info({limit, continue}, #state { queue = Queue, socket = Socket } = State
             {Version, Cell} = queue:head(Queue),
             case onion_cell:encode(Version, Cell) of
                 {ok, Data} ->
+                    lager:debug("Send packet: ~w", [Data]),
+
                     send(Socket, Data),
 
                     Size     = iolist_size(Data),
