@@ -103,7 +103,6 @@ idle({outgoing_connection, Address, Port}, State) ->
 
 %% @private
 handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Address, peer = Peer } = State) ->
-    log_incoming_cell(State, Cell),
     forward_outgoing_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
@@ -132,7 +131,6 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
     end;
 
 handshaking(?CELL(0, versions, Versions), #state { type = outgoing, address = Address, peer = Peer } = State) ->
-    log_incoming_cell(State, Cell),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
             log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
@@ -146,21 +144,17 @@ handshaking(?CELL(0, versions, Versions), #state { type = outgoing, address = Ad
     end;
 
 handshaking(?CELL(Cell), #state { type = outgoing } = State) ->
-    log_incoming_cell(State, Cell),
     {next_state, handshaking, State}.
 
 authenticating(?CELL(0, certs, Certs), #state { type = incoming } = State) ->
-    log_incoming_cell(State, Cell),
     {next_state, authenticating, State#state { certs = Certs }};
 
 authenticating(?CELL(0, authenticate, Authenticate), #state { type = incoming } = State) ->
-    log_incoming_cell(State, Cell),
     {next_state, authenticating, State#state { authenticate = Authenticate }};
 
 authenticating(?CELL(0, netinfo, _Netinfo), #state { type         = incoming,
                                                      authenticate = Auth,
                                                      certs        = Certs } = State) ->
-    log_incoming_cell(State, Cell),
     case {Auth, Certs} of
         {undefined, undefined} ->
             {next_state, unauthenticated, State#state { authenticate = undefined,
@@ -185,7 +179,6 @@ authenticated(?CELL(CircuitID, relay), #state { type = incoming } = State) when 
     {next_state, authenticated, forward_circuit_cell(State, Cell)};
 
 authenticated(?CELL(Cell), #state { type = incoming } = State) ->
-    log_incoming_cell(State, Cell),
     {next_state, authenticated, State};
 
 authenticated({outgoing_cell, Cell}, #state { type = incoming } = State) ->
@@ -193,7 +186,6 @@ authenticated({outgoing_cell, Cell}, #state { type = incoming } = State) ->
     {next_state, authenticated, State}.
 
 unauthenticated(?CELL(Cell), #state { type = incoming } = State) ->
-    log_incoming_cell(State, Cell),
     {next_state, authenticated, State}.
 
 %% @private
@@ -236,7 +228,6 @@ terminate(_Reason, _StateName, _State) ->
 
 %% @private
 forward_outgoing_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
-    log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]),
     talla_or_peer:outgoing_cell(Peer, Protocol, Cell).
 
 %% @private
@@ -252,10 +243,6 @@ forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := Circu
             talla_or_circuit:incoming_cell(Pid, Cell),
             State
     end.
-
-%% @private
-log_incoming_cell(State, #{ circuit := CircuitID, command := Command }) ->
-    log(State, notice, "-> ~p (Circuit: ~b)", [Command, CircuitID]).
 
 %% @private
 log(State, Method, Message) ->

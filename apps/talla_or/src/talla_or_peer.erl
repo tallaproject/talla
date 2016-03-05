@@ -174,18 +174,18 @@ handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
             {stop, Error, State}
     end;
 
-handle_cast({outgoing_cell, Version, Cell}, #state { sender = Sender } = State) ->
+handle_cast({outgoing_cell, Version, #{ circuit := CircuitID, command := Command } = Cell}, #state { sender = Sender } = State) ->
+    log(State, notice, "(v~b) <- ~p (Circuit: ~b)", [Version, Command, CircuitID]),
     talla_or_peer_send:outgoing_cell(Sender, Version, Cell),
     {noreply, State};
 
 handle_cast(close, State) ->
     {stop, normal, State};
 
-handle_cast({incoming_packet, Packet}, #state { continuation = Continuation, fsm = FSM } = State) ->
-    Data = <<Continuation/binary, Packet/binary>>,
-    case process_stream_chunk(FSM, Data) of
-        {ok, NewContinuation} ->
-            {noreply, State#state { continuation = NewContinuation }};
+handle_cast({incoming_packet, Packet}, State) ->
+    case process_stream_chunk(State, Packet) of
+        {ok, NewState} ->
+            {noreply, NewState};
 
         {error, _} = Error ->
             {stop, Error, State}
@@ -216,15 +216,17 @@ code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
 
 %% @private
-process_stream_chunk(FSM, Data) ->
+process_stream_chunk(#state { continuation = Continuation, fsm = FSM } = State, Packet) ->
+    Data = <<Continuation/binary, Packet/binary>>,
     Version = talla_or_peer_fsm:protocol_version(FSM),
     case onion_cell:decode(Version, Data) of
         {ok, Cell, NewData} ->
+            log_incoming_cell(State, Version, Cell),
             talla_or_peer_fsm:incoming_cell(FSM, Cell),
-            process_stream_chunk(FSM, NewData);
+            process_stream_chunk(State, NewData);
 
         {error, insufficient_data} ->
-            {ok, Data};
+            {ok, State#state { continuation = Data }};
 
         {error, _} = Error ->
             Error
@@ -243,3 +245,16 @@ name(Socket) ->
         Socket :: ssl:socket().
 register(Socket) ->
     onion_registry:register(name(Socket)).
+
+%% @private
+log_incoming_cell(State, Version, #{ circuit := CircuitID, command := Command }) ->
+    log(State, notice, "(v~b) -> ~p (Circuit: ~b)", [Version, Command, CircuitID]).
+
+%% @private
+log(State, Method, Message) ->
+    log(State, Method, Message, []).
+
+%% @private
+log(#state { socket = Socket }, Method, Message, Arguments) ->
+    {ok, {Address, Port}} = ssl:peername(Socket),
+    lager:log(Method, [], "~s:~b " ++ Message, [inet:ntoa(Address), Port] ++ Arguments).
