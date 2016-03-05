@@ -13,7 +13,7 @@
 
 %% API.
 -export([start_link/1,
-         dispatch/3
+         outgoing_cell/3
         ]).
 
 %% Private API.
@@ -44,13 +44,13 @@
 start_link(Socket) ->
     gen_server:start_link(?MODULE, [Socket], []).
 
--spec dispatch(Pid, Version, Cell) -> ok
+-spec outgoing_cell(Pid, Version, Cell) -> ok
     when
         Pid     :: pid(),
         Version :: onion_protocol:version(),
         Cell    :: onion_cell:cell().
-dispatch(Pid, Version, Cell) ->
-    gen_server:cast(Pid, {dispatch, Version, Cell}).
+outgoing_cell(Pid, Version, Cell) ->
+    gen_server:cast(Pid, {outgoing_cell, Version, Cell}).
 
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
@@ -87,7 +87,7 @@ handle_call(Request, _From, State) ->
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({dispatch, Version, Cell}, #state { queue = Queue, limit = Limit } = State) ->
+handle_cast({outgoing_cell, Version, Cell}, #state { queue = Queue, limit = Limit } = State) ->
     NewQueue = queue:in({Version, Cell}, Queue),
     case Limit of
         none ->

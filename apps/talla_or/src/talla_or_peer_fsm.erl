@@ -89,7 +89,7 @@ idle({incoming_connection, Address, Port}, State) ->
 %% @private
 handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Address, peer = Peer } = State) ->
     log_incoming_cell(State, Cell),
-    dispatch_cell(State, onion_cell:versions()),
+    forward_outgoing_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
             log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
@@ -103,14 +103,14 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
 
             {_, IDCertDER} = talla_or_tls_manager:id_certificate(),
             IDCert   = #{ type => 2, cert => IDCertDER },
-            dispatch_cell(NewState, onion_cell:certs([LinkCert, IDCert])),
+            forward_outgoing_cell(NewState, onion_cell:certs([LinkCert, IDCert])),
 
             %% auth_challenge
             Challenge = onion_random:bytes(32),
-            dispatch_cell(NewState, onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}])),
+            forward_outgoing_cell(NewState, onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}])),
 
             %% netinfo
-            dispatch_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
+            forward_outgoing_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
 
             {next_state, authenticating, NewState#state { auth_challenge = Challenge }};
 
@@ -159,7 +159,7 @@ authenticated(?CELL(Cell), #state { type = incoming } = State) ->
     {next_state, authenticated, State};
 
 authenticated({outgoing_cell, Cell}, #state { type = incoming } = State) ->
-    dispatch_cell(State, Cell),
+    forward_outgoing_cell(State, Cell),
     {next_state, authenticated, State}.
 
 unauthenticated(?CELL(Cell), #state { type = incoming } = State) ->
@@ -200,9 +200,9 @@ terminate(_Reason, _StateName, _State) ->
     ok.
 
 %% @private
-dispatch_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
+forward_outgoing_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
     log(State, notice, "<- ~p (Circuit: ~b)", [Command, CircuitID]),
-    talla_or_peer:dispatch(Peer, Protocol, Cell).
+    talla_or_peer:outgoing_cell(Peer, Protocol, Cell).
 
 %% @private
 forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := CircuitID, command := Command } = Cell) ->

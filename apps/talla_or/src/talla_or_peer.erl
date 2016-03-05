@@ -14,10 +14,10 @@
 %% API.
 -export([start_link/0,
          connect/3,
-         dispatch/3,
          set_protocol/2,
          close/1,
-         incoming_packet/2
+         incoming_packet/2,
+         outgoing_cell/3
         ]).
 
 %% Private API.
@@ -68,14 +68,6 @@ start_link() ->
 connect(Peer, Address, Port) ->
     gen_server:cast(Peer, {connect, Address, Port}).
 
--spec dispatch(Peer, Protocol, Cell) -> ok
-    when
-        Peer     :: pid(),
-        Protocol :: onion_protocol:version(),
-        Cell     :: onion_cell:cell().
-dispatch(Peer, Protocol, Cell) ->
-    gen_server:cast(Peer, {dispatch, Protocol, Cell}).
-
 -spec set_protocol(Peer, Protocol) -> ok
     when
         Peer     :: pid(),
@@ -95,6 +87,14 @@ close(Peer) ->
         Packet :: binary().
 incoming_packet(Peer, Packet) ->
     gen_server:cast(Peer, {incoming_packet, Packet}).
+
+-spec outgoing_cell(Peer, Protocol, Cell) -> ok
+    when
+        Peer     :: pid(),
+        Protocol :: onion_protocol:version(),
+        Cell     :: onion_cell:cell().
+outgoing_cell(Peer, Protocol, Cell) ->
+    gen_server:cast(Peer, {outgoing_cell, Protocol, Cell}).
 
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
@@ -192,8 +192,8 @@ handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
             {stop, Error, State}
     end;
 
-handle_cast({dispatch, Version, Cell}, #state { sender = Sender } = State) ->
-    talla_or_peer_send:dispatch(Sender, Version, Cell),
+handle_cast({outgoing_cell, Version, Cell}, #state { sender = Sender } = State) ->
+    talla_or_peer_send:outgoing_cell(Sender, Version, Cell),
     {noreply, State};
 
 handle_cast({set_protocol, Protocol}, State) ->
