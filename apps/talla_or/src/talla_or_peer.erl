@@ -14,7 +14,6 @@
 %% API.
 -export([start_link/0,
          connect/3,
-         set_protocol/2,
          close/1,
          incoming_packet/2,
          outgoing_cell/3
@@ -42,15 +41,14 @@
 -include_lib("public_key/include/public_key.hrl").
 
 -record(state, {
-        socket       :: ssl:socket() | undefined,
-        continuation :: binary(),
-        protocol     :: onion_cell:version(),
+        socket       = undefined :: ssl:socket() | undefined,
+        continuation = <<>>      :: binary(),
 
-        fsm          :: pid(),  %% talla_or_peer_fsm.
-        sender       :: pid(),  %% talla_or_peer_send.
-        receiver     :: pid(),  %% talla_or_peer_recv.
+        fsm      :: pid(),  %% talla_or_peer_fsm.
+        sender   :: pid(),  %% talla_or_peer_send.
+        receiver :: pid(),  %% talla_or_peer_recv.
 
-        children     :: ordsets:ordset(pid())
+        children :: ordsets:ordset(pid())
     }).
 
 -spec start_link() -> {ok, Peer} | {error, Reason}
@@ -68,13 +66,6 @@ start_link() ->
 connect(Peer, Address, Port) ->
     gen_server:cast(Peer, {connect, Address, Port}).
 
--spec set_protocol(Peer, Protocol) -> ok
-    when
-        Peer     :: pid(),
-        Protocol :: onion_cell:version().
-set_protocol(Peer, Protocol) ->
-    gen_server:cast(Peer, {set_protocol, Protocol}).
-
 -spec close(Peer) -> ok
     when
         Peer :: pid().
@@ -88,13 +79,13 @@ close(Peer) ->
 incoming_packet(Peer, Packet) ->
     gen_server:cast(Peer, {incoming_packet, Packet}).
 
--spec outgoing_cell(Peer, Protocol, Cell) -> ok
+-spec outgoing_cell(Peer, Version, Cell) -> ok
     when
-        Peer     :: pid(),
-        Protocol :: onion_protocol:version(),
-        Cell     :: onion_cell:cell().
-outgoing_cell(Peer, Protocol, Cell) ->
-    gen_server:cast(Peer, {outgoing_cell, Protocol, Cell}).
+        Peer    :: pid(),
+        Version :: onion_protocol:version(),
+        Cell    :: onion_cell:cell().
+outgoing_cell(Peer, Version, Cell) ->
+    gen_server:cast(Peer, {outgoing_cell, Version, Cell}).
 
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
@@ -139,8 +130,6 @@ init(Ref, Socket, _Transport, _Options) ->
 
     gen_server:enter_loop(?MODULE, [], #state {
                                           socket       = Socket,
-                                          continuation = <<>>,
-                                          protocol     = 3,
                                           fsm          = FSM,
                                           sender       = Sender,
                                           receiver     = Receiver,
@@ -149,11 +138,7 @@ init(Ref, Socket, _Transport, _Options) ->
 
 %% @private
 init([]) ->
-    {ok, #state {
-            socket       = undefined,
-            continuation = <<>>,
-            protocol     = 3
-           }}.
+    {ok, #state {}}.
 
 %% @private
 handle_call(Request, _From, State) ->
@@ -162,7 +147,7 @@ handle_call(Request, _From, State) ->
 
 %% @private
 handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
-    case ssl:connect(Address, Port, [binary, {packet, 0}, {active, once}]) of
+    case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, false}]) of
         {ok, Socket} ->
             register(Socket),
 
@@ -174,10 +159,7 @@ handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
             monitor(process, Sender),
             monitor(process, Receiver),
 
-            {ok, TLSCertificate} = ssl:peercert(Socket),
-            {ok, TLSInfo} = ssl:connection_information(Socket),
-
-            talla_or_peer_fsm:outgoing_connection(FSM, Address, Port, TLSCertificate, TLSInfo),
+            talla_or_peer_fsm:outgoing_connection(FSM, Address, Port),
 
             {noreply, State#state {
                         socket   = Socket,
@@ -196,16 +178,12 @@ handle_cast({outgoing_cell, Version, Cell}, #state { sender = Sender } = State) 
     talla_or_peer_send:outgoing_cell(Sender, Version, Cell),
     {noreply, State};
 
-handle_cast({set_protocol, Protocol}, State) ->
-    lager:info("Setting peer protocol: ~p", [Protocol]),
-    {noreply, State#state { protocol = Protocol }};
-
 handle_cast(close, State) ->
     {stop, normal, State};
 
-handle_cast({incoming_packet, Packet}, #state { continuation = Continuation, protocol = Protocol, fsm = FSM } = State) ->
+handle_cast({incoming_packet, Packet}, #state { continuation = Continuation, fsm = FSM } = State) ->
     Data = <<Continuation/binary, Packet/binary>>,
-    case process_stream_chunk(FSM, Protocol, Data) of
+    case process_stream_chunk(FSM, Data) of
         {ok, NewContinuation} ->
             {noreply, State#state { continuation = NewContinuation }};
 
@@ -238,11 +216,12 @@ code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
 
 %% @private
-process_stream_chunk(PeerFSM, Protocol, Data) ->
-    case onion_cell:decode(Protocol, Data) of
+process_stream_chunk(FSM, Data) ->
+    Version = talla_or_peer_fsm:protocol_version(FSM),
+    case onion_cell:decode(Version, Data) of
         {ok, Cell, NewData} ->
-            talla_or_peer_fsm:incoming_cell(PeerFSM, Cell),
-            process_stream_chunk(PeerFSM, Protocol, NewData);
+            talla_or_peer_fsm:incoming_cell(FSM, Cell),
+            process_stream_chunk(FSM, NewData);
 
         {error, insufficient_data} ->
             {ok, Data};

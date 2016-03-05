@@ -17,7 +17,10 @@
          incoming_cell/2,
          outgoing_cell/2,
 
-         incoming_connection/3
+         incoming_connection/3,
+         outgoing_connection/3,
+
+         protocol_version/1
         ]).
 
 %% States.
@@ -80,10 +83,22 @@ outgoing_cell(Peer, Cell) ->
 incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
 
+outgoing_connection(Peer, Address, Port) ->
+    gen_fsm:send_event(Peer, {outgoing_connection, Address, Port}).
+
+protocol_version(Peer) ->
+    gen_fsm:sync_send_all_state_event(Peer, protocol_version).
+
 %% @private
 idle({incoming_connection, Address, Port}, State) ->
     NewState = State#state { type = incoming, address = Address, port = Port },
     log(NewState, notice, "Incoming connection from ~s:~b", [inet:ntoa(Address), Port]),
+    {next_state, handshaking, NewState};
+
+idle({outgoing_connection, Address, Port}, State) ->
+    NewState = State#state { type = outgoing, address = Address, port = Port },
+    log(NewState, notice, "Outgoing connection to ~s:~b", [inet:ntoa(Address), Port]),
+    forward_outgoing_cell(NewState, onion_cell:versions()),
     {next_state, handshaking, NewState}.
 
 %% @private
@@ -93,8 +108,6 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
             log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
-            talla_or_peer:set_protocol(Peer, NewProtocol),
-
             NewState = State#state { protocol = NewProtocol },
 
             %% certs
@@ -115,9 +128,26 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
             {next_state, authenticating, NewState#state { auth_challenge = Challenge }};
 
         {error, Reason} ->
-            talla_or_peer:close(Peer),
             {stop, normal, State}
-    end.
+    end;
+
+handshaking(?CELL(0, versions, Versions), #state { type = outgoing, address = Address, peer = Peer } = State) ->
+    log_incoming_cell(State, Cell),
+    case onion_protocol:shared_protocol(Versions) of
+        {ok, NewProtocol} ->
+            log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
+
+            NewState = State#state { protocol = NewProtocol },
+
+            {next_state, handshaking, NewState};
+
+        {error, Reason} ->
+            {stop, normal, State}
+    end;
+
+handshaking(?CELL(Cell), #state { type = outgoing } = State) ->
+    log_incoming_cell(State, Cell),
+    {next_state, handshaking, State}.
 
 authenticating(?CELL(0, certs, Certs), #state { type = incoming } = State) ->
     log_incoming_cell(State, Cell),
@@ -178,8 +208,13 @@ handle_event(Request, StateName, State) ->
     {next_state, StateName, State}.
 
 %% @private
-handle_sync_event(Request, _From, StateName, State) ->
+handle_sync_event(protocol_version, From, StateName, #state { protocol = ProtocolVersion } = State) ->
+    gen_fsm:reply(From, ProtocolVersion),
+    {next_state, StateName, State};
+
+handle_sync_event(Request, From, StateName, State) ->
     log(State, warning, "Unhandled sync event: ~p", [Request]),
+    gen_fsm:reply(From, unhandled),
     {next_state, StateName, State}.
 
 %% @private
