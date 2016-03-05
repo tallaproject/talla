@@ -30,8 +30,7 @@
 
          authenticating/2,
 
-         authenticated/2,
-         unauthenticated/2
+         authenticated/2
         ]).
 
 %% Generic FSM Callbacks.
@@ -166,26 +165,23 @@ authenticating(?CELL(0, netinfo, _Netinfo), #state { type         = incoming,
                                                       certs        = undefined }}
     end.
 
-authenticated(?CELL(CircuitID, create2), #state { type = incoming } = State) when CircuitID =/= 0 ->
+authenticated(?CELL(CircuitID, create2), State) when CircuitID =/= 0 ->
     {next_state, authenticated, forward_circuit_cell(State, Cell)};
 
-authenticated(?CELL(CircuitID, destroy), #state { type = incoming } = State) when CircuitID =/= 0 ->
+authenticated(?CELL(CircuitID, destroy), State) when CircuitID =/= 0 ->
     {next_state, authenticated, forward_circuit_cell(State, Cell)};
 
-authenticated(?CELL(CircuitID, relay_early), #state { type = incoming } = State) when CircuitID =/= 0 ->
+authenticated(?CELL(CircuitID, relay_early), State) when CircuitID =/= 0 ->
     {next_state, authenticated, forward_circuit_cell(State, Cell)};
 
-authenticated(?CELL(CircuitID, relay), #state { type = incoming } = State) when CircuitID =/= 0 ->
+authenticated(?CELL(CircuitID, relay), State) when CircuitID =/= 0 ->
     {next_state, authenticated, forward_circuit_cell(State, Cell)};
 
 authenticated(?CELL(Cell), #state { type = incoming } = State) ->
     {next_state, authenticated, State};
 
-authenticated({outgoing_cell, Cell}, #state { type = incoming } = State) ->
+authenticated({outgoing_cell, Cell}, State) ->
     forward_outgoing_cell(State, Cell),
-    {next_state, authenticated, State}.
-
-unauthenticated(?CELL(Cell), #state { type = incoming } = State) ->
     {next_state, authenticated, State}.
 
 %% @private
