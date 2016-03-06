@@ -20,6 +20,7 @@
          incoming_connection/3,
 
          connect/3,
+         connect/4,
          connected/1,
          connect_error/2,
 
@@ -28,13 +29,10 @@
 
 %% States.
 -export([idle/2,
-
          connecting/2,
-
          handshaking/2,
 
          authenticating/2,
-
          authenticated/2
         ]).
 
@@ -53,12 +51,14 @@
         peer     :: pid(),
         protocol :: onion_cell:version(),
 
+        auth :: boolean(),
+
         address  :: inet:ip_address(),
         port     :: inet:port_number(),
 
-        certs          :: [map()],
-        authenticate   :: map(),
-        auth_challenge :: binary(),
+        certs_payload        :: [map()],
+        authenticate_payload :: map(),
+        auth_challenge       :: binary(),
 
         circuits :: map()
     }).
@@ -88,7 +88,10 @@ incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
 
 connect(Peer, Address, Port) ->
-    gen_fsm:send_event(Peer, {connect, Address, Port}).
+    connect(Peer, Address, Port, false).
+
+connect(Peer, Address, Port, Auth) ->
+    gen_fsm:send_event(Peer, {connect, Address, Port, Auth}).
 
 connected(Peer) ->
     gen_fsm:send_event(Peer, connected).
@@ -107,10 +110,11 @@ idle({incoming_connection, Address, Port}, State) ->
     talla_or_peer_manager:connected(),
     {next_state, handshaking, NewState};
 
-idle({connect, Address, Port}, State) ->
+idle({connect, Address, Port, Authenticate}, State) ->
     NewState = State#state { type    = outgoing,
                              address = Address,
-                             port    = Port },
+                             port    = Port,
+                             auth    = Authenticate },
     log(NewState, notice, "Connecting"),
     talla_or_peer_manager:connecting(),
     {next_state, connecting, NewState}.
@@ -172,25 +176,25 @@ handshaking(?CELL(Cell), #state { type = outgoing } = State) ->
     {next_state, handshaking, State}.
 
 authenticating(?CELL(0, certs, Certs), #state { type = incoming } = State) ->
-    {next_state, authenticating, State#state { certs = Certs }};
+    {next_state, authenticating, State#state { certs_payload = Certs }};
 
 authenticating(?CELL(0, authenticate, Authenticate), #state { type = incoming } = State) ->
-    {next_state, authenticating, State#state { authenticate = Authenticate }};
+    {next_state, authenticating, State#state { authenticate_payload = Authenticate }};
 
-authenticating(?CELL(0, netinfo, _Netinfo), #state { type         = incoming,
-                                                     authenticate = Auth,
-                                                     certs        = Certs } = State) ->
+authenticating(?CELL(0, netinfo, _Netinfo), #state { type                 = incoming,
+                                                     authenticate_payload = Auth,
+                                                     certs_payload        = Certs } = State) ->
     case {Auth, Certs} of
         {undefined, undefined} ->
             talla_or_peer_manager:unauthenticated(),
-            {next_state, unauthenticated, State#state { authenticate = undefined,
-                                                        certs        = undefined }};
+            {next_state, unauthenticated, State#state { authenticate_payload = undefined,
+                                                        certs_payload        = undefined }};
 
         {_, _} ->
             %% FIXME(ahf): Authenticate this peer.
             talla_or_peer_manager:authenticated(),
-            {next_state, authenticated, State#state { authenticate = undefined,
-                                                      certs        = undefined }}
+            {next_state, authenticated, State#state { authenticate_payload = undefined,
+                                                      certs_payload        = undefined }}
     end.
 
 authenticated(?CELL(CircuitID, create2), State) when CircuitID =/= 0 ->
@@ -216,7 +220,8 @@ authenticated({outgoing_cell, Cell}, State) ->
 init([Peer]) ->
     {ok, idle, #state { peer     = Peer,
                         protocol = 3,
-                        circuits = maps:new() }}.
+                        circuits = maps:new(),
+                        auth     = false }}.
 
 %% @private
 handle_event(Request, StateName, State) ->
