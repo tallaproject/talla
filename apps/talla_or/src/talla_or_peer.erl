@@ -14,6 +14,7 @@
 %% API.
 -export([start_link/0,
          connect/3,
+         connect/4,
          close/1,
          incoming_packet/2,
          outgoing_cell/3
@@ -40,6 +41,8 @@
 
 -include_lib("public_key/include/public_key.hrl").
 
+-define(DEFAULT_TIMEOUT, 10*1000).
+
 -record(state, {
         socket       = undefined :: ssl:socket() | undefined,
         continuation = <<>>      :: binary(),
@@ -64,7 +67,16 @@ start_link() ->
         Address :: inet:ip_address(),
         Port    :: inet:port_number().
 connect(Peer, Address, Port) ->
-    gen_server:cast(Peer, {connect, Address, Port}).
+    connect(Peer, Address, Port, ?DEFAULT_TIMEOUT).
+
+-spec connect(Peer, Address, Port, Timeout) -> ok
+    when
+        Peer    :: pid(),
+        Address :: inet:ip_address(),
+        Port    :: inet:port_number(),
+        Timeout :: timeout().
+connect(Peer, Address, Port, Timeout) ->
+    gen_server:cast(Peer, {connect, Address, Port, Timeout}).
 
 -spec close(Peer) -> ok
     when
@@ -146,8 +158,9 @@ handle_call(Request, _From, State) ->
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({connect, Address, Port}, #state { socket = undefined } = State) ->
-    case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, false}]) of
+handle_cast({connect, Address, Port, Timeout}, #state { socket = undefined, fsm = FSM, children = Children } = State) ->
+    talla_or_peer_fsm:connect(FSM, Address, Port),
+    case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, false}], Timeout) of
         {ok, Socket} ->
             register(Socket),
 
