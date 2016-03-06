@@ -18,13 +18,18 @@
          outgoing_cell/2,
 
          incoming_connection/3,
-         outgoing_connection/3,
+
+         connect/3,
+         connected/1,
+         connect_error/2,
 
          protocol_version/1
         ]).
 
 %% States.
 -export([idle/2,
+
+         connecting/2,
 
          handshaking/2,
 
@@ -82,8 +87,14 @@ outgoing_cell(Peer, Cell) ->
 incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
 
-outgoing_connection(Peer, Address, Port) ->
-    gen_fsm:send_event(Peer, {outgoing_connection, Address, Port}).
+connect(Peer, Address, Port) ->
+    gen_fsm:send_event(Peer, {connect, Address, Port}).
+
+connected(Peer) ->
+    gen_fsm:send_event(Peer, connected).
+
+connect_error(Peer, Reason) ->
+    gen_fsm:send_event(Peer, {connect_error, Reason}).
 
 protocol_version(Peer) ->
     gen_fsm:sync_send_all_state_event(Peer, protocol_version).
@@ -91,21 +102,36 @@ protocol_version(Peer) ->
 %% @private
 idle({incoming_connection, Address, Port}, State) ->
     NewState = State#state { type = incoming, address = Address, port = Port },
-    log(NewState, notice, "Incoming connection from ~s:~b", [inet:ntoa(Address), Port]),
+    log(NewState, notice, "Incoming connection established"),
+    talla_or_peer_manager:connecting(), %% Makes the peer manager monitor us.
+    talla_or_peer_manager:connected(),
     {next_state, handshaking, NewState};
 
-idle({outgoing_connection, Address, Port}, State) ->
-    NewState = State#state { type = outgoing, address = Address, port = Port },
-    log(NewState, notice, "Outgoing connection to ~s:~b", [inet:ntoa(Address), Port]),
-    forward_outgoing_cell(NewState, onion_cell:versions()),
-    {next_state, handshaking, NewState}.
+idle({connect, Address, Port}, State) ->
+    NewState = State#state { type    = outgoing,
+                             address = Address,
+                             port    = Port },
+    log(NewState, notice, "Connecting"),
+    talla_or_peer_manager:connecting(),
+    {next_state, connecting, NewState}.
+
+%% @private
+connecting(connected, State) ->
+    log(State, notice, "Connection established"),
+    talla_or_peer_manager:connected(),
+    forward_outgoing_cell(State, onion_cell:versions()),
+    {next_state, handshaking, State};
+
+connecting({connect_error, Reason}, State) ->
+    log(State, notice, "Unable to connect: ~p", [Reason]),
+    {stop, normal, State}.
 
 %% @private
 handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Address, peer = Peer } = State) ->
     forward_outgoing_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
-            log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
+            log(State, info, "Negotiated protocol: ~b", [NewProtocol]),
             NewState = State#state { protocol = NewProtocol },
 
             %% certs
@@ -132,7 +158,7 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
 handshaking(?CELL(0, versions, Versions), #state { type = outgoing, address = Address, peer = Peer } = State) ->
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
-            log(State, notice, "Negotiated protocol: ~b", [NewProtocol]),
+            log(State, info, "Negotiated protocol: ~b", [NewProtocol]),
 
             NewState = State#state { protocol = NewProtocol },
 
@@ -156,11 +182,13 @@ authenticating(?CELL(0, netinfo, _Netinfo), #state { type         = incoming,
                                                      certs        = Certs } = State) ->
     case {Auth, Certs} of
         {undefined, undefined} ->
+            talla_or_peer_manager:unauthenticated(),
             {next_state, unauthenticated, State#state { authenticate = undefined,
                                                         certs        = undefined }};
 
         {_, _} ->
             %% FIXME(ahf): Authenticate this peer.
+            talla_or_peer_manager:authenticated(),
             {next_state, authenticated, State#state { authenticate = undefined,
                                                       certs        = undefined }}
     end.

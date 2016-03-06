@@ -150,7 +150,9 @@ init(Ref, Socket, _Transport, _Options) ->
 
 %% @private
 init([]) ->
-    {ok, #state {}}.
+    {ok, FSM} = talla_or_peer_fsm:start_link(),
+    monitor(process, FSM),
+    {ok, #state { fsm = FSM, children = ordsets:from_list([FSM]) }}.
 
 %% @private
 handle_call(Request, _From, State) ->
@@ -163,28 +165,24 @@ handle_cast({connect, Address, Port, Timeout}, #state { socket = undefined, fsm 
     case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, false}], Timeout) of
         {ok, Socket} ->
             register(Socket),
-
-            {ok, FSM}      = talla_or_peer_fsm:start_link(),
             {ok, Sender}   = talla_or_peer_send:start_link(Socket),
             {ok, Receiver} = talla_or_peer_recv:start_link(Socket),
 
-            monitor(process, FSM),
             monitor(process, Sender),
             monitor(process, Receiver),
 
-            talla_or_peer_fsm:outgoing_connection(FSM, Address, Port),
+            talla_or_peer_fsm:connected(FSM),
 
             {noreply, State#state {
                         socket   = Socket,
-                        fsm      = FSM,
                         sender   = Sender,
                         receiver = Receiver,
-                        children = ordsets:from_list([FSM, Sender, Receiver])
+                        children = ordsets:union(Children, ordsets:from_list([Sender, Receiver]))
                        }};
 
-        {error, _} = Error ->
-            lager:warning("Unable to connect to ~s:~b", [inet:ntoa(Address), Port]),
-            {stop, Error, State}
+        {error, Reason} ->
+            talla_or_peer_fsm:connect_error(FSM, Reason),
+            {stop, normal, State}
     end;
 
 handle_cast({outgoing_cell, Version, #{ circuit := CircuitID, command := Command } = Cell}, #state { sender = Sender } = State) ->
