@@ -17,7 +17,11 @@
          connect/4,
          close/1,
          incoming_packet/2,
-         outgoing_cell/3
+         outgoing_cell/3,
+
+         tls_master_secret/1,
+         tls_client_random/1,
+         tls_server_random/1
         ]).
 
 %% Private API.
@@ -99,6 +103,24 @@ incoming_packet(Peer, Packet) ->
 outgoing_cell(Peer, Version, Cell) ->
     gen_server:cast(Peer, {outgoing_cell, Version, Cell}).
 
+-spec tls_master_secret(Peer) -> binary()
+    when
+        Peer :: pid().
+tls_master_secret(Peer) ->
+    gen_server:call(Peer, tls_master_secret).
+
+-spec tls_client_random(Peer) -> binary()
+    when
+        Peer :: pid().
+tls_client_random(Peer) ->
+    gen_server:call(Peer, tls_client_random).
+
+-spec tls_server_random(Peer) -> binary()
+    when
+        Peer :: pid().
+tls_server_random(Peer) ->
+    gen_server:call(Peer, tls_server_random).
+
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
     when
@@ -155,6 +177,15 @@ init([]) ->
     {ok, #state { fsm = FSM, children = ordsets:from_list([FSM]) }}.
 
 %% @private
+handle_call(tls_master_secret, _From, #state { socket = Socket } = State) ->
+    {reply, talla_or_ssl_hack:master_secret(Socket), State};
+
+handle_call(tls_client_random, _From, #state { socket = Socket } = State) ->
+    {reply, talla_or_ssl_hack:client_random(Socket), State};
+
+handle_call(tls_server_random, _From, #state { socket = Socket } = State) ->
+    {reply, talla_or_ssl_hack:server_random(Socket), State};
+
 handle_call(Request, _From, State) ->
     lager:warning("Unhandled call: ~p", [Request]),
     {reply, unhandled, State}.
