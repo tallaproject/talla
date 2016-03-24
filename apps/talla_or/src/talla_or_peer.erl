@@ -169,13 +169,13 @@ init([]) ->
 
 %% @private
 handle_call(tls_master_secret, _From, #state { socket = Socket } = State) ->
-    {reply, talla_or_ssl_hack:master_secret(Socket), State};
+    {reply, onion_ssl:master_secret(Socket), State};
 
 handle_call(tls_client_random, _From, #state { socket = Socket } = State) ->
-    {reply, talla_or_ssl_hack:client_random(Socket), State};
+    {reply, onion_ssl:client_random(Socket), State};
 
 handle_call(tls_server_random, _From, #state { socket = Socket } = State) ->
-    {reply, talla_or_ssl_hack:server_random(Socket), State};
+    {reply, onion_ssl:server_random(Socket), State};
 
 handle_call(Request, _From, State) ->
     lager:warning("Unhandled call: ~p", [Request]),
