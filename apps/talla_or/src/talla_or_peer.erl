@@ -16,7 +16,6 @@
          connect/3,
          connect/4,
          close/1,
-         incoming_packet/2,
          outgoing_cell/3,
 
          tls_master_secret/1,
@@ -51,11 +50,12 @@
         socket       = undefined :: ssl:socket() | undefined,
         continuation = <<>>      :: binary(),
 
-        fsm      :: pid(),  %% talla_or_peer_fsm.
-        sender   :: pid(),  %% talla_or_peer_send.
-        receiver :: pid(),  %% talla_or_peer_recv.
+        fsm        :: pid(),  %% talla_or_peer_fsm.
+        sender     :: pid(),  %% talla_or_peer_send.
 
-        children :: ordsets:ordset(pid())
+        recv_limit :: pid(),
+
+        children   :: ordsets:ordset(pid())
     }).
 
 -spec start_link() -> {ok, Peer} | {error, Reason}
@@ -87,13 +87,6 @@ connect(Peer, Address, Port, Timeout) ->
         Peer :: pid().
 close(Peer) ->
     gen_server:cast(Peer, close).
-
--spec incoming_packet(Peer, Packet) -> ok
-    when
-        Peer   :: pid(),
-        Packet :: binary().
-incoming_packet(Peer, Packet) ->
-    gen_server:cast(Peer, {incoming_packet, Packet}).
 
 -spec outgoing_cell(Peer, Version, Cell) -> ok
     when
@@ -150,24 +143,22 @@ init(Ref, Socket, _Transport, _Options) ->
 
     register(Socket),
 
-    {ok, FSM}      = talla_or_peer_fsm:start_link(),
-    {ok, Sender}   = talla_or_peer_send:start_link(Socket),
-    {ok, Receiver} = talla_or_peer_recv:start_link(Socket),
+    {ok, FSM}    = talla_or_peer_fsm:start_link(),
+    {ok, Sender} = talla_or_peer_send:start_link(Socket),
 
     monitor(process, FSM),
     monitor(process, Sender),
-    monitor(process, Receiver),
 
     {ok, {Address, Port}} = ssl:peername(Socket),
 
     talla_or_peer_fsm:incoming_connection(FSM, Address, Port),
 
     gen_server:enter_loop(?MODULE, [], #state {
-                                          socket       = Socket,
-                                          fsm          = FSM,
-                                          sender       = Sender,
-                                          receiver     = Receiver,
-                                          children     = ordsets:from_list([FSM, Sender, Receiver])
+                                          socket     = Socket,
+                                          fsm        = FSM,
+                                          sender     = Sender,
+                                          recv_limit = talla_or_limit:recv(1),
+                                          children   = ordsets:from_list([FSM, Sender])
                                         }).
 
 %% @private
@@ -193,22 +184,20 @@ handle_call(Request, _From, State) ->
 %% @private
 handle_cast({connect, Address, Port, Timeout}, #state { socket = undefined, fsm = FSM, children = Children } = State) ->
     talla_or_peer_fsm:connect(FSM, Address, Port),
-    case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, false}], Timeout) of
+    case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, once}], Timeout) of
         {ok, Socket} ->
             register(Socket),
             {ok, Sender}   = talla_or_peer_send:start_link(Socket),
-            {ok, Receiver} = talla_or_peer_recv:start_link(Socket),
 
             monitor(process, Sender),
-            monitor(process, Receiver),
 
             talla_or_peer_fsm:connected(FSM),
 
             {noreply, State#state {
-                        socket   = Socket,
-                        sender   = Sender,
-                        receiver = Receiver,
-                        children = ordsets:union(Children, ordsets:from_list([Sender, Receiver]))
+                        socket     = Socket,
+                        recv_limit = talla_or_limit:recv(1),
+                        sender     = Sender,
+                        children   = ordsets:union(Children, ordsets:from_list([Sender]))
                        }};
 
         {error, Reason} ->
@@ -224,15 +213,6 @@ handle_cast({outgoing_cell, Version, #{ circuit := CircuitID, command := Command
 handle_cast(close, State) ->
     {stop, normal, State};
 
-handle_cast({incoming_packet, Packet}, State) ->
-    case process_stream_chunk(State, Packet) of
-        {ok, NewState} ->
-            {noreply, NewState};
-
-        {error, _} = Error ->
-            {stop, Error, State}
-    end;
-
 handle_cast(Message, State) ->
     lager:warning("Unhandled cast: ~p", [Message]),
     {noreply, State}.
@@ -244,6 +224,30 @@ handle_info({'DOWN', _Ref, process, Pid, normal}, #state { children = Children }
     [Child ! stop || Child <- Children],
 
     {stop, normal, State};
+
+handle_info({ssl, Socket, Packet}, #state { socket = Socket } = State) ->
+    log(State, debug, "Read packet: ~w", [Packet]),
+
+    PacketSize = byte_size(Packet),
+    NewLimit   = talla_or_limit:recv(PacketSize),
+
+    case process_stream_chunk(State, Packet) of
+        {ok, NewState} ->
+            {noreply, NewState#state { recv_limit = NewLimit }};
+
+        {error, _} = Error ->
+            {stop, Error, State}
+    end;
+
+handle_info({ssl_closed, Socket}, #state { socket = Socket } = State) ->
+    {stop, normal, State};
+
+handle_info({ssl_error, Socket}, #state { socket = Socket } = State) ->
+    {stop, normal, State};
+
+handle_info({limit, continue}, #state { socket = Socket } = State) ->
+    ack_socket(Socket),
+    {noreply, State};
 
 handle_info(Info, State) ->
     lager:warning("Unhandled info: ~p", [Info]),
@@ -300,3 +304,10 @@ log(State, Method, Message) ->
 log(#state { socket = Socket }, Method, Message, Arguments) ->
     {ok, {Address, Port}} = ssl:peername(Socket),
     lager:log(Method, [], "~s:~b " ++ Message, [inet:ntoa(Address), Port] ++ Arguments).
+
+%% @private
+-spec ack_socket(Socket) -> ok
+    when
+        Socket :: ssl:sslsocket().
+ack_socket(Socket) ->
+    ssl:setopts(Socket, [{active, once}]).
