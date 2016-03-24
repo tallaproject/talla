@@ -139,7 +139,7 @@ new_certificates() ->
         Certificate :: term(),
         Reason      :: term().
 new_certificate(PublicKey, Nickname1, Nickname2, Lifetime) ->
-    Now = onion_time:unix_epoch(),
+    Now = onion_time:epoch(),
     StartTimeSecond = onion_random:time_range(Now - Lifetime, Now) + 2 * 24 * 60 * 60,
 
     StartTime = StartTimeSecond - (StartTimeSecond rem (24 * 60 * 60)),
@@ -147,8 +147,8 @@ new_certificate(PublicKey, Nickname1, Nickname2, Lifetime) ->
 
     onion_x509:create_certificate(#{
         public_key => PublicKey,
-        valid_from => onion_time:from_unix_epoch(StartTime),
-        valid_to   => onion_time:from_unix_epoch(EndTime),
+        valid_from => onion_time:from_epoch(StartTime),
+        valid_to   => onion_time:from_epoch(EndTime),
         subject    => [{name, Nickname1}],
         issuer     => [{name, Nickname2}]
     }).

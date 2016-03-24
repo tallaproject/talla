@@ -41,12 +41,12 @@ uptime() ->
 %% @private
 init([]) ->
     {ok, #state {
-            system_start_timestamp = onion_time:unix_epoch()
+            system_start_timestamp = onion_time:epoch()
            }}.
 
 %% @private
 handle_call(uptime, _From, #state { system_start_timestamp = Timestamp } = State) ->
-    Now = onion_time:unix_epoch(),
+    Now = onion_time:epoch(),
     {reply, Now - Timestamp, State};
 
 handle_call(start_timestamp, _From, #state { system_start_timestamp = Timestamp } = State) ->
