@@ -12,8 +12,12 @@
 
 %% API.
 -export([start_link/0,
+
          country_from_ipv4/1,
-         country_from_ipv6/1
+         country_from_ipv6/1,
+
+         digest_ipv4/0,
+         digest_ipv6/0
         ]).
 
 %% Generic Server Callbacks.
@@ -33,7 +37,10 @@
 -define(MATCH_SPEC(V), [{{{'$1', '$2'}, '$3'}, [{'=<', '$1', {V}},
                                                 {'>=', '$2', {V}}], ['$3']}]).
 
--record(state, {}).
+-record(state, {
+          digest_ipv4 :: binary(),
+          digest_ipv6 :: binary()
+         }).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
@@ -71,11 +78,25 @@ country_from_ipv6({_, _, _, _, _, _, _, _} = IP) ->
             hd(List)
     end.
 
+-spec digest_ipv4() -> binary().
+digest_ipv4() ->
+    gen_server:call(?SERVER, digest_ipv4).
+
+-spec digest_ipv6() -> binary().
+digest_ipv6() ->
+    gen_server:call(?SERVER, digest_ipv6).
+
 %% @private
 init(_Args) ->
     {ok, #state {}, 0}.
 
 %% @private
+handle_call(digest_ipv4, _From, #state { digest_ipv4 = Digest } = State) ->
+    {reply, Digest, State};
+
+handle_call(digest_ipv6, _From, #state { digest_ipv6 = Digest } = State) ->
+    {reply, Digest, State};
+
 handle_call(Request, _From, State) ->
     lager:warning("Unhandled call: ~p", [Request]),
     {reply, unhandled, State}.
@@ -87,10 +108,19 @@ handle_cast(Message, State) ->
 
 %% @private
 handle_info(timeout, State) ->
-    lager:notice("Loading GeoIP databases"),
+    IPv4Digest = compute_digest(file("geoip")),
+    lager:notice("Using GeoIP IPv4 Database: ~s", [onion_base16:encode(IPv4Digest)]),
+
+    IPv6Digest = compute_digest(file("geoip6")),
+    lager:notice("Using GeoIP IPv6 Database: ~s", [onion_base16:encode(IPv6Digest)]),
+
     new_ipv4_table(),
     new_ipv6_table(),
-    {noreply, State};
+
+    {noreply, State#state {
+                    digest_ipv4 = IPv4Digest,
+                    digest_ipv6 = IPv6Digest
+                }};
 
 handle_info(Info, State) ->
     lager:warning("Unhandled info: ~p", [Info]),
@@ -127,3 +157,11 @@ new_ipv6_table() ->
         Path     :: file:filename().
 file(Filename) ->
     filename:join([code:priv_dir(talla_core), "geoip", Filename]).
+
+%% @private
+-spec compute_digest(Filename) -> binary()
+    when
+        Filename :: file:filename().
+compute_digest(Filename) ->
+    {ok, Content} = file:read_file(Filename),
+    crypto:hash(sha, Content).
