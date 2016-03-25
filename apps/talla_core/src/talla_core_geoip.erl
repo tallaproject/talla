@@ -45,7 +45,7 @@ start_link() ->
 country_from_ipv4({_, _, _, _} = IP) ->
     case ets:select(?IPV4_TABLE, ?MATCH_SPEC(IP)) of
         [] ->
-            <<"Unknown">>;
+            <<"??">>;
 
         [Country] ->
             Country;
@@ -61,7 +61,7 @@ country_from_ipv4({_, _, _, _} = IP) ->
 country_from_ipv6({_, _, _, _, _, _, _, _} = IP) ->
     case ets:select(?IPV6_TABLE, ?MATCH_SPEC(IP)) of
         [] ->
-            <<"Unknown">>;
+            <<"??">>;
 
         [Country] ->
             Country;
