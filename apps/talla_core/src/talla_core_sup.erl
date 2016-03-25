@@ -32,6 +32,7 @@ init([]) ->
     {ok, {{one_for_one, 10, 10}, [
             ?CHILD(talla_core_uptime_manager, worker),
             ?CHILD(talla_core_geoip, worker),
+            ?CHILD(talla_core_bandwidth, worker),
             ?CHILD(talla_core_identity_key, worker),
             ?CHILD(talla_core_onion_key, worker),
             ?CHILD(talla_core_ntor_key, worker)

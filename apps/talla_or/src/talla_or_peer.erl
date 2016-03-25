@@ -228,8 +228,10 @@ handle_info({'DOWN', _Ref, process, Pid, normal}, #state { children = Children }
 handle_info({ssl, Socket, Packet}, #state { socket = Socket } = State) ->
     log(State, debug, "Read packet: ~w", [Packet]),
 
-    PacketSize = byte_size(Packet),
-    NewLimit   = talla_or_limit:recv(PacketSize),
+    Size     = byte_size(Packet),
+    NewLimit = talla_or_limit:recv(Size),
+
+    talla_core_bandwidth:bytes_read(Size),
 
     case process_stream_chunk(State, Packet) of
         {ok, NewState} ->

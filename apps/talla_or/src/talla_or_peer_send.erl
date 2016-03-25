@@ -120,6 +120,8 @@ handle_info({limit, continue}, #state { queue = Queue, socket = Socket } = State
                     NewQueue = queue:tail(Queue),
                     NewLimit = talla_or_limit:send(Size),
 
+                    talla_core_bandwidth:bytes_written(Size),
+
                     {noreply, State#state { queue = NewQueue, limit = NewLimit }};
 
                 {error, Reason} = Error ->
