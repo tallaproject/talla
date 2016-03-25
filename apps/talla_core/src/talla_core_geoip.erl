@@ -108,14 +108,11 @@ handle_cast(Message, State) ->
 
 %% @private
 handle_info(timeout, State) ->
-    IPv4Digest = compute_digest(file("geoip")),
+    IPv4Digest = new_ipv4_table(),
     lager:notice("Using GeoIP IPv4 Database: ~s", [onion_base16:encode(IPv4Digest)]),
 
-    IPv6Digest = compute_digest(file("geoip6")),
+    IPv6Digest = new_ipv6_table(),
     lager:notice("Using GeoIP IPv6 Database: ~s", [onion_base16:encode(IPv6Digest)]),
-
-    new_ipv4_table(),
-    new_ipv6_table(),
 
     {noreply, State#state {
                     digest_ipv4 = IPv4Digest,
@@ -135,20 +132,20 @@ code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
 
 %% @private
--spec new_ipv4_table() -> ok.
+-spec new_ipv4_table() -> binary().
 new_ipv4_table() ->
     Table = ets:new(?IPV4_TABLE, [ordered_set, protected, named_table, {read_concurrency, true}]),
-    {ok, IPs} = onion_geoip:parse_ipv4_file(file("geoip")),
+    {ok, IPs, Digest} = onion_geoip:parse_ipv4_file(file("geoip")),
     true = ets:insert_new(Table, IPs),
-    ok.
+    Digest.
 
 %% @private
--spec new_ipv6_table() -> ok.
+-spec new_ipv6_table() -> binary().
 new_ipv6_table() ->
     Table = ets:new(?IPV6_TABLE, [ordered_set, protected, named_table, {read_concurrency, true}]),
-    {ok, IPs} = onion_geoip:parse_ipv6_file(file("geoip6")),
+    {ok, IPs, Digest} = onion_geoip:parse_ipv6_file(file("geoip6")),
     true = ets:insert_new(Table, IPs),
-    ok.
+    Digest.
 
 %% @private
 -spec file(Filename) -> Path
