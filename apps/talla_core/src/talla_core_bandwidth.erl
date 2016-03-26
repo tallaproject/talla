@@ -14,7 +14,9 @@
 -export([start_link/0,
 
          bytes_read/1,
-         bytes_written/1
+         bytes_written/1,
+
+         current_bandwidth/0
         ]).
 
 %% Generic Server Callbacks.
@@ -28,7 +30,8 @@
 
 -define(SERVER, ?MODULE).
 
--define(TABLE, ?MODULE).
+-define(TABLE, talla_core_bandwidth).
+-define(RUNNING_TABLE, talla_core_bandwidth_running).
 
 %% How long is a period?
 -define(PERIOD, (15 * 60)). %% 900.
@@ -36,9 +39,12 @@
 %% How long should we store data?
 -define(HISTORY, (24 * 60 * 60)). %% 86400 (one day)
 
--define(DELETE_MATCH_SPEC(T), [{{{'$1', '$2'}, '$3'},
-                                [{'=/=', '$1', meta}],
-                                [{'<', '$2', T - ?HISTORY}]}]).
+%% How long should we store data for the running counter?
+-define(RUNNING_HISTORY, (15 * 60)). %% 900 (15 minutes)
+
+-define(DELETE_MATCH_SPEC(T, W), [{{{'$1', '$2'}, '$3'},
+                                  [{'=/=', '$1', meta}],
+                                  [{'<', '$2', T - W}]}]).
 
 -record(state, {}).
 
@@ -50,21 +56,49 @@ start_link() ->
     when
         Bytes :: non_neg_integer().
 bytes_read(Bytes) when is_integer(Bytes), Bytes >= 0 ->
-    T = current_period(),
-    ets:update_counter(?TABLE, {bytes_read, T}, Bytes, {{bytes_read, T}, 0}),
+    T = onion_time:epoch(),
+    P = current_period(),
+
+    ets:update_counter(?TABLE,         {bytes_read, P}, Bytes, {{bytes_read, P}, 0}),
+    ets:update_counter(?RUNNING_TABLE, {bytes_read, T}, Bytes, {{bytes_read, T}, 0}),
+
     ok.
 
 -spec bytes_written(Bytes) -> ok
     when
         Bytes :: non_neg_integer().
 bytes_written(Bytes) when is_integer(Bytes), Bytes >= 0 ->
-    T = current_period(),
-    ets:update_counter(?TABLE, {bytes_written, T}, Bytes, {{bytes_written, T}, 0}),
+    T = onion_time:epoch(),
+    P = current_period(),
+
+    ets:update_counter(?TABLE,         {bytes_written, P}, Bytes, {{bytes_written, P}, 0}),
+    ets:update_counter(?RUNNING_TABLE, {bytes_written, T}, Bytes, {{bytes_written, T}, 0}),
+
     ok.
+
+-spec current_bandwidth() -> {Read, Write}
+    when
+        Read  :: non_neg_integer(),
+        Write :: non_neg_integer().
+current_bandwidth() ->
+    T = onion_time:epoch() - 10,
+    ReadList = ets:select(?RUNNING_TABLE, [{{{bytes_read, '$1'}, '$2'}, [{'>', '$1', T}],['$2']}]),
+    WriteList = ets:select(?RUNNING_TABLE, [{{{bytes_written, '$1'}, '$2'}, [{'>', '$1', T}],['$2']}]),
+    ReadListLen = length(ReadList),
+    WriteListLen = length(WriteList),
+
+    case ReadListLen + WriteListLen of
+        0 ->
+            {0, 0};
+
+        _ ->
+            {lists:sum(ReadList) / ReadListLen, lists:sum(WriteList) / WriteListLen}
+    end.
 
 %% @private
 init(_Args) ->
     ets:new(?TABLE, [ordered_set, public, named_table, {read_concurrency, true}, {write_concurrency, true}]),
+    ets:new(?RUNNING_TABLE, [ordered_set, public, named_table, {read_concurrency, true}, {write_concurrency, true}]),
     bump_period(),
     collect_garbage(),
     {ok, #state {}}.
@@ -111,15 +145,11 @@ bump_period() ->
 -spec collect_garbage() -> ok.
 collect_garbage() ->
     T = onion_time:epoch(),
-    DeleteCount = ets:select_delete(?TABLE, ?DELETE_MATCH_SPEC(T)),
-    case DeleteCount of
-        0 ->
-            ok;
 
-        DeleteCount ->
-            lager:debug("Garbage collected ~b bandwidth counters", [DeleteCount])
-    end,
-    erlang:send_after(timer:seconds(?HISTORY), self(), collect_garbage).
+    ets:select_delete(?TABLE, ?DELETE_MATCH_SPEC(T, ?HISTORY)),
+    ets:select_delete(?RUNNING_TABLE, ?DELETE_MATCH_SPEC(T, ?RUNNING_HISTORY)),
+
+    erlang:send_after(timer:minutes(15), self(), collect_garbage).
 
 %% @private
 -spec current_period() -> non_neg_integer().
