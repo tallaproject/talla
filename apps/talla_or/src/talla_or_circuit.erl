@@ -97,7 +97,6 @@ created(?CELL(CircuitID, relay_early, #{ data := Payload }), #state { relay_earl
                                                                       forward_hash      = ForwardHash } = State) when RelayEarlyCount =< 8 ->
     {NewForwardKey, Data} = onion_aes:decrypt(ForwardKey, Payload),
     PayloadDigest = digest(Data, ForwardHash),
-    lager:error("XXX: ~w ~w", [Data, ForwardHash]),
     case Data of
         <<Command:8/integer, Recognized:16/integer, StreamID:16/integer, Digest:4/binary, Length:16/integer, Packet:Length/binary, _/binary>> when Recognized =:= 0 ->
             case PayloadDigest of
