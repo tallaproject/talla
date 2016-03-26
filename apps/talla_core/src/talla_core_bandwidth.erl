@@ -87,13 +87,15 @@ current_bandwidth() ->
     ReadListLen = length(ReadList),
     WriteListLen = length(WriteList),
 
-    case ReadListLen + WriteListLen of
-        0 ->
-            {0, 0};
-
-        _ ->
-            {lists:sum(ReadList) / ReadListLen, lists:sum(WriteList) / WriteListLen}
-    end.
+    ReadBytes = case ReadListLen of
+                    0 -> 0;
+                    _ -> lists:sum(ReadList) / ReadListLen
+                end,
+    WriteBytes = case WriteListLen of
+                     0 -> 0;
+                     _ -> lists:sum(WriteList) / WriteListLen
+                 end,
+    {ReadBytes, WriteBytes}.
 
 %% @private
 init(_Args) ->
