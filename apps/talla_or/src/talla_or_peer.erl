@@ -13,14 +13,13 @@
 
 %% API.
 -export([start_link/0,
-         connect/3,
-         connect/4,
-         close/1,
-         outgoing_cell/3,
 
-         tls_master_secret/1,
-         tls_client_random/1,
-         tls_server_random/1
+         connect/4,
+         connect/5,
+
+         close/1,
+
+         send/2
         ]).
 
 %% Private API.
@@ -65,22 +64,24 @@
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
--spec connect(Peer, Address, Port) -> ok
+-spec connect(Peer, Address, Port, Identity) -> ok
     when
-        Peer    :: pid(),
-        Address :: inet:ip_address(),
-        Port    :: inet:port_number().
-connect(Peer, Address, Port) ->
-    connect(Peer, Address, Port, ?DEFAULT_TIMEOUT).
+        Peer     :: pid(),
+        Address  :: inet:ip_address(),
+        Port     :: inet:port_number(),
+        Identity :: binary().
+connect(Peer, Address, Port, Identity) ->
+    connect(Peer, Address, Port, Identity, ?DEFAULT_TIMEOUT).
 
--spec connect(Peer, Address, Port, Timeout) -> ok
+-spec connect(Peer, Address, Port, Identity, Timeout) -> ok
     when
-        Peer    :: pid(),
-        Address :: inet:ip_address(),
-        Port    :: inet:port_number(),
-        Timeout :: timeout().
-connect(Peer, Address, Port, Timeout) ->
-    gen_server:cast(Peer, {connect, Address, Port, Timeout}).
+        Peer     :: pid(),
+        Address  :: inet:ip_address(),
+        Port     :: inet:port_number(),
+        Identity :: binary(),
+        Timeout  :: timeout().
+connect(Peer, Address, Port, Identity, Timeout) ->
+    gen_server:cast(Peer, {connect, Address, Port, Identity, Timeout}).
 
 -spec close(Peer) -> ok
     when
@@ -88,31 +89,12 @@ connect(Peer, Address, Port, Timeout) ->
 close(Peer) ->
     gen_server:cast(Peer, close).
 
--spec outgoing_cell(Peer, Version, Cell) -> ok
+-spec send(Peer, Data) -> ok
     when
-        Peer    :: pid(),
-        Version :: onion_protocol:version(),
-        Cell    :: onion_cell:cell().
-outgoing_cell(Peer, Version, Cell) ->
-    gen_server:cast(Peer, {outgoing_cell, Version, Cell}).
-
--spec tls_master_secret(Peer) -> binary()
-    when
-        Peer :: pid().
-tls_master_secret(Peer) ->
-    gen_server:call(Peer, tls_master_secret).
-
--spec tls_client_random(Peer) -> binary()
-    when
-        Peer :: pid().
-tls_client_random(Peer) ->
-    gen_server:call(Peer, tls_client_random).
-
--spec tls_server_random(Peer) -> binary()
-    when
-        Peer :: pid().
-tls_server_random(Peer) ->
-    gen_server:call(Peer, tls_server_random).
+        Peer :: pid(),
+        Data :: iolist().
+send(Peer, Data) ->
+    gen_server:cast(Peer, {send, Data}).
 
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
@@ -165,29 +147,23 @@ init(Ref, Socket, _Transport, _Options) ->
 init([]) ->
     {ok, FSM} = talla_or_peer_fsm:start_link(),
     monitor(process, FSM),
-    {ok, #state { fsm = FSM, children = ordsets:from_list([FSM]) }}.
+    {ok, #state {
+            fsm      = FSM,
+            children = ordsets:from_list([FSM])
+           }}.
 
 %% @private
-handle_call(tls_master_secret, _From, #state { socket = Socket } = State) ->
-    {reply, onion_ssl:master_secret(Socket), State};
-
-handle_call(tls_client_random, _From, #state { socket = Socket } = State) ->
-    {reply, onion_ssl:client_random(Socket), State};
-
-handle_call(tls_server_random, _From, #state { socket = Socket } = State) ->
-    {reply, onion_ssl:server_random(Socket), State};
-
 handle_call(Request, _From, State) ->
     lager:warning("Unhandled call: ~p", [Request]),
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({connect, Address, Port, Timeout}, #state { socket = undefined, fsm = FSM, children = Children } = State) ->
-    talla_or_peer_fsm:connect(FSM, Address, Port),
+handle_cast({connect, Address, Port, Identity, Timeout}, #state { socket = undefined, fsm = FSM, children = Children } = State) ->
+    talla_or_peer_fsm:connect(FSM, Address, Port, Identity),
     case ssl:connect(Address, Port, [{mode, binary}, {packet, 0}, {active, once}], Timeout) of
         {ok, Socket} ->
             register(Socket),
-            {ok, Sender}   = talla_or_peer_send:start_link(Socket),
+            {ok, Sender} = talla_or_peer_send:start_link(Socket),
 
             monitor(process, Sender),
 
@@ -205,9 +181,8 @@ handle_cast({connect, Address, Port, Timeout}, #state { socket = undefined, fsm 
             {stop, normal, State}
     end;
 
-handle_cast({outgoing_cell, Version, #{ circuit := CircuitID, command := Command } = Cell}, #state { sender = Sender } = State) ->
-    log(State, notice, "(v~b) <- ~p (Circuit: ~b)", [Version, Command, CircuitID]),
-    talla_or_peer_send:outgoing_cell(Sender, Version, Cell),
+handle_cast({send, Data}, #state { sender = Sender } = State) ->
+    talla_or_peer_send:send(Sender, Data),
     {noreply, State};
 
 handle_cast(close, State) ->
@@ -233,9 +208,9 @@ handle_info({ssl, Socket, Packet}, #state { socket = Socket } = State) ->
 
     talla_core_bandwidth:bytes_read(Size),
 
-    case process_stream_chunk(State, Packet) of
+    case process_stream_chunk(State#state { recv_limit = NewLimit }, Packet) of
         {ok, NewState} ->
-            {noreply, NewState#state { recv_limit = NewLimit }};
+            {noreply, NewState};
 
         {error, _} = Error ->
             {stop, Error, State}

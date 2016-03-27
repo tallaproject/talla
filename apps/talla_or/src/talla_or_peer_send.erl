@@ -13,7 +13,7 @@
 
 %% API.
 -export([start_link/1,
-         outgoing_cell/3
+         send/2
         ]).
 
 %% Private API.
@@ -31,10 +31,10 @@
         ]).
 
 -record(state, {
-        socket :: ssl:socket(),
-        peer   :: pid(),
-        queue  :: queue:queue(),
-        limit  :: none | pid()
+        socket  :: ssl:socket(),
+        peer    :: pid(),
+        queue   :: queue:queue(),
+        limit   :: none | pid()
     }).
 
 -spec start_link(Socket) -> {ok, pid()} | {error, Reason}
@@ -44,13 +44,12 @@
 start_link(Socket) ->
     gen_server:start_link(?MODULE, [Socket], []).
 
--spec outgoing_cell(Pid, Version, Cell) -> ok
+-spec send(Pid, Packet) -> ok
     when
-        Pid     :: pid(),
-        Version :: onion_protocol:version(),
-        Cell    :: onion_cell:cell().
-outgoing_cell(Pid, Version, Cell) ->
-    gen_server:cast(Pid, {outgoing_cell, Version, Cell}).
+        Pid    :: pid(),
+        Packet :: iolist().
+send(Pid, Packet) ->
+    gen_server:cast(Pid, {send, Packet}).
 
 %% @private
 -spec lookup(Socket) -> {ok, Pid} | {error, Reason}
@@ -87,8 +86,8 @@ handle_call(Request, _From, State) ->
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({outgoing_cell, Version, Cell}, #state { queue = Queue, limit = Limit } = State) ->
-    NewQueue = queue:in({Version, Cell}, Queue),
+handle_cast({send, Packet}, #state { queue = Queue, limit = Limit } = State) ->
+    NewQueue = queue:in(Packet, Queue),
     case Limit of
         none ->
             NewLimit = talla_or_limit:send(1),
@@ -103,31 +102,24 @@ handle_cast(Message, State) ->
     {noreply, State}.
 
 %% @private
-handle_info({limit, continue}, #state { queue = Queue, socket = Socket } = State) ->
+handle_info({limit, continue}, #state { peer = Peer, socket = Socket, queue = Queue } = State) ->
     case queue:is_empty(Queue) of
         true ->
             {noreply, State#state { limit = none }};
 
         false ->
-            {Version, Cell} = queue:head(Queue),
-            case onion_cell:encode(Version, Cell) of
-                {ok, Data} ->
-                    lager:debug("Send packet: ~w", [Data]),
+            Packet = queue:head(Queue),
+            lager:debug("Sending packet: ~w", [Packet]),
 
-                    send(Socket, Data),
+            ssl:send(Socket, Packet),
 
-                    Size     = iolist_size(Data),
-                    NewQueue = queue:tail(Queue),
-                    NewLimit = talla_or_limit:send(Size),
+            Size     = iolist_size(Packet),
+            NewQueue = queue:tail(Queue),
+            NewLimit = talla_or_limit:send(Size),
 
-                    talla_core_bandwidth:bytes_written(Size),
+            talla_core_bandwidth:bytes_written(Size),
 
-                    {noreply, State#state { queue = NewQueue, limit = NewLimit }};
-
-                {error, Reason} = Error ->
-                    lager:warning("Unable to send bad cell: ~b ~p (~p)", [Version, Cell, Reason]),
-                    {stop, Error, State}
-            end
+            {noreply, State#state { queue = NewQueue, limit = NewLimit }}
     end;
 
 handle_info(stop, State) ->
@@ -158,12 +150,3 @@ name(Socket) ->
         Socket :: ssl:socket().
 register(Socket) ->
     onion_registry:register(name(Socket)).
-
-%% @private
--spec send(Socket, Data) -> ok | {error, Reason}
-    when
-        Socket :: ssl:socket(),
-        Data   :: iolist(),
-        Reason :: term().
-send(Socket, Data) ->
-    ssl:send(Socket, Data).

@@ -19,7 +19,6 @@
 
          incoming_connection/3,
 
-         connect/3,
          connect/4,
          connected/1,
          connect_error/2,
@@ -51,7 +50,8 @@
         peer     :: pid(),
         protocol :: onion_cell:version(),
 
-        auth :: boolean(),
+        auth     :: boolean(),
+        identity :: binary(),
 
         address  :: inet:ip_address(),
         port     :: inet:port_number(),
@@ -87,11 +87,8 @@ outgoing_cell(Peer, Cell) ->
 incoming_connection(Peer, Address, Port) ->
     gen_fsm:send_event(Peer, {incoming_connection, Address, Port}).
 
-connect(Peer, Address, Port) ->
-    connect(Peer, Address, Port, false).
-
-connect(Peer, Address, Port, Auth) ->
-    gen_fsm:send_event(Peer, {connect, Address, Port, Auth}).
+connect(Peer, Address, Port, Identity) ->
+    gen_fsm:send_event(Peer, {connect, Address, Port, Identity}).
 
 connected(Peer) ->
     gen_fsm:send_event(Peer, connected).
@@ -110,12 +107,13 @@ idle({incoming_connection, Address, Port}, State) ->
     talla_or_peer_manager:connected(),
     {next_state, handshaking, NewState};
 
-idle({connect, Address, Port, Authenticate}, State) ->
-    NewState = State#state { type    = outgoing,
-                             address = Address,
-                             port    = Port,
-                             auth    = Authenticate },
-    log(NewState, notice, "Connecting"),
+idle({connect, Address, Port, Identity}, State) ->
+    NewState = State#state { type     = outgoing,
+                             address  = Address,
+                             port     = Port,
+                             auth     = true,
+                             identity = Identity },
+    log(NewState, notice, "Connecting to ~s:~b (~s)", [inet:ntoa(Address), Port, onion_base16:encode(Identity)]),
     talla_or_peer_manager:connecting(),
     {next_state, connecting, NewState}.
 
@@ -123,7 +121,7 @@ idle({connect, Address, Port, Authenticate}, State) ->
 connecting(connected, State) ->
     log(State, notice, "Connection established"),
     talla_or_peer_manager:connected(),
-    forward_outgoing_cell(State, onion_cell:versions()),
+    send_cell(State, onion_cell:versions()),
     {next_state, handshaking, State};
 
 connecting({connect_error, Reason}, State) ->
@@ -132,7 +130,7 @@ connecting({connect_error, Reason}, State) ->
 
 %% @private
 handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Address, peer = Peer } = State) ->
-    forward_outgoing_cell(State, onion_cell:versions()),
+    send_cell(State, onion_cell:versions()),
     case onion_protocol:shared_protocol(Versions) of
         {ok, NewProtocol} ->
             log(State, info, "Negotiated protocol: ~b", [NewProtocol]),
@@ -144,14 +142,14 @@ handshaking(?CELL(0, versions, Versions), #state { type = incoming, address = Ad
 
             {_, IDCertDER} = talla_or_tls_manager:id_certificate(),
             IDCert   = #{ type => 2, cert => IDCertDER },
-            forward_outgoing_cell(NewState, onion_cell:certs([LinkCert, IDCert])),
+            send_cell(NewState, onion_cell:certs([LinkCert, IDCert])),
 
             %% auth_challenge
             Challenge = onion_random:bytes(32),
-            forward_outgoing_cell(NewState, onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}])),
+            send_cell(NewState, onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}])),
 
             %% netinfo
-            forward_outgoing_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
+            send_cell(NewState, onion_cell:netinfo(Address, [talla_or_config:address()])),
 
             {next_state, authenticating, NewState#state { auth_challenge = Challenge }};
 
@@ -213,7 +211,7 @@ authenticated(?CELL(Cell), #state { type = incoming } = State) ->
     {next_state, authenticated, State};
 
 authenticated({outgoing_cell, Cell}, State) ->
-    forward_outgoing_cell(State, Cell),
+    send_cell(State, Cell),
     {next_state, authenticated, State}.
 
 %% @private
@@ -256,8 +254,15 @@ terminate(_Reason, _StateName, _State) ->
     ok.
 
 %% @private
-forward_outgoing_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
-    talla_or_peer:outgoing_cell(Peer, Protocol, Cell).
+send_cell(#state { peer = Peer, protocol = Protocol } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
+    log(State, notice, "(v~b) <- ~p (Circuit: ~b)", [Protocol, Command, CircuitID]),
+    case onion_cell:encode(Protocol, Cell) of
+        {ok, Data} ->
+            talla_or_peer:send(Peer, Data);
+
+        {error, _} = Error ->
+            Error
+    end.
 
 %% @private
 forward_circuit_cell(#state { circuits = Circuits } = State, #{ circuit := CircuitID, command := Command } = Cell) ->
