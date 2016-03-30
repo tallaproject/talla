@@ -14,7 +14,9 @@
 %% API.
 -export([start_link/0,
          public_key/0,
+
          fingerprint/0,
+         fingerprint/1,
 
          sign/1,
          sign_certificate/1,
@@ -38,14 +40,20 @@
         key :: onion_rsa:keypair()
     }).
 
--spec public_key() -> onion_key:public_key().
+-spec public_key() -> onion_rsa:public_key().
 public_key() ->
     gen_server:call(?SERVER, public_key).
 
 -spec fingerprint() -> binary().
 fingerprint() ->
+    fingerprint(sha).
+
+-spec fingerprint(Hash) -> binary()
+    when
+        Hash :: atom().
+fingerprint(Hash) ->
     {ok, PublicKey} = onion_rsa:der_encode(public_key()),
-    crypto:hash(sha, PublicKey).
+    crypto:hash(Hash, PublicKey).
 
 -spec sign(Data :: binary()) -> binary().
 sign(Data) when is_binary(Data) ->
