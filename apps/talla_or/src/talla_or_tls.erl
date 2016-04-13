@@ -61,6 +61,13 @@ accept(LSocket, Timeout) ->
 accept_ack(CSocket, Timeout) ->
     {#{ secret := SecretKey}, Certificate} = talla_or_tls_manager:link_certificate(),
     {ok, SecretKeyDER} = onion_rsa:der_encode(SecretKey),
+
+    %% FIXME(ahf): I was unable to get this information using ssl:getopts/2 -
+    %% if you have a better way of doing this, please fix onion_ssl_session,
+    %% the handle_info({certificate, ...}, ...) function in talla_or_peer, and
+    %% this line.
+    self() ! {certificate, Certificate},
+
     case ssl:ssl_accept(CSocket, [{key, {'RSAPrivateKey', SecretKeyDER}},
                                   {cert, Certificate}], Timeout) of
         ok ->
