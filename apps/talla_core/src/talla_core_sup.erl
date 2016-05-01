@@ -35,5 +35,7 @@ init([]) ->
             ?CHILD(talla_core_bandwidth, worker),
             ?CHILD(talla_core_identity_key, worker),
             ?CHILD(talla_core_onion_key, worker),
-            ?CHILD(talla_core_ntor_key, worker)
+            ?CHILD(talla_core_ntor_key, worker),
+            ?CHILD(talla_core_ed25519_master_key, worker),
+            ?CHILD(talla_core_ed25519_signing_key, worker)
         ]}}.

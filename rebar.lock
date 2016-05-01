@@ -67,7 +67,7 @@
  {<<"mimerl">>,{pkg,<<"mimerl">>,<<"1.0.2">>},1},
  {<<"onion">>,
   {git,"https://lab.baconsvin.org/talla/onion.git",
-       {ref,"15495e33ba1419a3ef07530fc50cd40eb5ae54b8"}},
+       {ref,"78c162bafb638d01014435b3f124fe67675cb2df"}},
   0},
  {<<"parse_trans">>,
   {git,"git://github.com/uwiger/parse_trans.git",
