@@ -164,9 +164,9 @@ log_certificate({Type, {_KeyPair, Certificate}}) ->
     Hash = onion_binary:fingerprint(sha, Certificate),
     case Type of
         link_certificate ->
-            lager:notice("Link certificate: ~s", [Hash]);
+            lager:notice("Certificate fingerprint: ~s (Link Certificate)", [Hash]);
         id_certificate ->
-            lager:notice("ID certificate: ~s", [Hash]);
+            lager:notice("Certificate fingerprint: ~s (Identity Certificate)", [Hash]);
         auth_certificate ->
-            lager:notice("Auth certificate: ~s", [Hash])
+            lager:notice("Certificate fingerprint: ~s (Authentication Certificate)", [Hash])
     end.
