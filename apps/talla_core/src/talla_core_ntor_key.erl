@@ -51,10 +51,9 @@ server_handshake(ClientPublicKey, Length) ->
 %% @private
 init(_Args) ->
     Filename = filename:join([talla_core_config:data_dir(), "keys", "secret_onion_key_ntor"]),
-    Mode = 8#00600,
     case file:read_file(Filename) of
         {ok, <<"== c25519v1: onion ==", SecretKey:32/bytes, PublicKey:32/bytes>>} ->
-            lager:notice("Loading ~s", [Filename]),
+            lager:notice("Loaded ~s", [Filename]),
             {ok, #state { secret_key = SecretKey, public_key = PublicKey }};
 
         {ok, _} ->
@@ -64,7 +63,7 @@ init(_Args) ->
         {error, enoent} ->
             lager:notice("Creating ~s", [Filename]),
             #{ secret := SecretKey, public := PublicKey } = enacl_ext:curve25519_keypair(),
-            ok = onion_file:touch(Filename, Mode),
+            ok = onion_file:touch(Filename, 8#00600),
             ok = file:write_file(Filename, <<"== c25519v1: onion ==", SecretKey/bytes, PublicKey/bytes>>),
             {ok, #state { secret_key = SecretKey, public_key = PublicKey }};
 

@@ -80,10 +80,9 @@ start_link() ->
 %% @private
 init(_Args) ->
     Filename = filename:join([talla_core_config:data_dir(), "keys", "secret_id_key"]),
-    Mode = 8#00600,
     case file:read_file(Filename) of
         {ok, FileContent} ->
-            lager:notice("Loading ~s", [Filename]),
+            lager:notice("Loaded ~s", [Filename]),
             {ok, SecretKey} = onion_rsa:pem_decode(FileContent),
             {ok, #state { key = #{ secret => SecretKey,
                                    public => onion_rsa:secret_key_to_public_key(SecretKey) }}};
@@ -93,7 +92,7 @@ init(_Args) ->
             {ok, #{ secret := SecretKey } = Key} = onion_rsa:keypair(1024),
             {ok, SecretKeyPem} = onion_rsa:pem_encode(SecretKey),
             ok = filelib:ensure_dir(Filename),
-            ok = onion_file:touch(Filename, Mode),
+            ok = onion_file:touch(Filename, 8#00600),
             ok = file:write_file(Filename, SecretKeyPem),
             {ok, #state { key = Key }};
 
@@ -107,10 +106,10 @@ handle_call(public_key, _From, #state { key = #{ public := PublicKey } } = State
     {reply, PublicKey, State};
 
 handle_call({sign, Data}, _From, #state { key = #{ secret := SecretKey } } = State) ->
-    {reply, onion_rsa:private_encrypt(crypto:hash(sha, Data), SecretKey), State};
+    {reply, onion_rsa:private_encrypt(crypto:hash(sha), SecretKey, rsa_pkcs1_padding), State};
 
 handle_call({sign_document, Document}, _From, #state { key = #{ secret := SecretKey } } = State) ->
-    Signature = onion_rsa:private_encrypt(crypto:hash(sha, Document), SecretKey),
+    Signature = onion_rsa:private_encrypt(crypto:hash(sha, Document), SecretKey, rsa_pkcs1_padding),
     {reply, [Document, onion_pem:encode("SIGNATURE", Signature)], State};
 
 handle_call({sign_certificate, Certificate}, _From, #state { key = #{ secret := SecretKey } } = State) ->

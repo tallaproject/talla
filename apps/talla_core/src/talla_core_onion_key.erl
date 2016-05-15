@@ -47,10 +47,9 @@ start_link() ->
 %% @private
 init(_Args) ->
     Filename = filename:join([talla_core_config:data_dir(), "keys", "secret_onion_key"]),
-    Mode = 8#00600,
     case file:read_file(Filename) of
         {ok, FileContent} ->
-            lager:notice("Loading ~s", [Filename]),
+            lager:notice("Loaded ~s", [Filename]),
             {ok, SecretKey} = onion_rsa:pem_decode(FileContent),
             {ok, #state { key = #{ secret => SecretKey,
                                    public => onion_rsa:secret_key_to_public_key(SecretKey) }}};
@@ -60,7 +59,7 @@ init(_Args) ->
             {ok, #{ secret := SecretKey } = Key} = onion_rsa:keypair(1024),
             {ok, SecretKeyPem} = onion_rsa:pem_encode(SecretKey),
             ok = filelib:ensure_dir(Filename),
-            ok = onion_file:touch(Filename, Mode),
+            ok = onion_file:touch(Filename, 8#00600),
             ok = file:write_file(Filename, SecretKeyPem),
             {ok, #state { key = Key }};
 
