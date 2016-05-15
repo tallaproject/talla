@@ -81,7 +81,7 @@ validate_document(_Authority, Document) ->
 %%        [ExpiresDate, ExpiresTime | _]     = onion_document:get_item("dir-key-expires", Document),
 
         true
-    catch X:Y ->
+    catch _:_ ->
         false
     end.
 
