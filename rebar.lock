@@ -78,7 +78,7 @@
        {ref,"741bfb73ca663394ecf7a73410506d66f01985a6"}},
   0},
  {<<"rlimit">>,
-  {git,"git@lab.baconsvin.org:talla/rlimit.git",
+  {git,"https://lab.baconsvin.org/talla/rlimit.git",
        {ref,"3f8e0373cd279d02334085372c36eb1618422857"}},
   0},
  {<<"setup">>,
