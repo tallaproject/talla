@@ -16,7 +16,7 @@ dialyzer:
 	@$(REBAR) dialyzer
 
 check:
-	@$(REBAR) do eunit -v, cover -v
+	@$(REBAR) do eunit -v, ct -v, proper -v
 
 console: rel
 	./_build/default/rel/$(PROJECT)/bin/$(PROJECT) console

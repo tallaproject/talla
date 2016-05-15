@@ -1,0 +1,18 @@
+before_script:
+    - apt-get update -qq && apt-get install -y -qq libsodium-dev
+    - erl +V
+
+stages:
+    - test
+
+test-18.3:
+    image: ahfaeroey/otp:18.3
+    stage: test
+    script:
+        - make check
+
+#test-19.0:
+#    image: ahfaeroey/otp:19.0
+#    stage: test
+#    script:
+#        - make check
