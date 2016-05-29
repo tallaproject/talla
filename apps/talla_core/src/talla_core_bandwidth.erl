@@ -42,9 +42,17 @@
 %% How long should we store data for the running counter?
 -define(RUNNING_HISTORY, (15 * 60)). %% 900 (15 minutes)
 
--define(DELETE_MATCH_SPEC(T, W), [{{{'$1', '$2'}, '$3'},
-                                  [{'=/=', '$1', meta}],
-                                  [{'<', '$2', T - W}]}]).
+-include_lib("stdlib/include/ms_transform.hrl").
+
+-define(DELETE_MATCH_SPEC(T, W), ets:fun2ms(
+    fun({{Direction, Time}, Bytes})
+          when Direction =/= meta, Time < T - W -> true
+    end)).
+
+-define(BYTES_IO(Direction, T), ets:fun2ms(
+     fun({{Direction, Time}, Bytes})
+           when Time > T -> Bytes
+     end)).
 
 -record(state, {}).
 
@@ -82,8 +90,8 @@ bytes_written(Bytes) when is_integer(Bytes), Bytes >= 0 ->
         Write :: non_neg_integer().
 current_bandwidth() ->
     T = onion_time:epoch() - 10,
-    ReadList = ets:select(?RUNNING_TABLE, [{{{bytes_read, '$1'}, '$2'}, [{'>', '$1', T}],['$2']}]),
-    WriteList = ets:select(?RUNNING_TABLE, [{{{bytes_written, '$1'}, '$2'}, [{'>', '$1', T}],['$2']}]),
+    ReadList = ets:select(?RUNNING_TABLE, ?BYTES_IO(bytes_read, T)),
+    WriteList = ets:select(?RUNNING_TABLE, ?BYTES_IO(bytes_written, T)),
     ReadListLen = length(ReadList),
     WriteListLen = length(WriteList),
 
@@ -147,7 +155,6 @@ bump_period() ->
 -spec collect_garbage() -> ok.
 collect_garbage() ->
     T = onion_time:epoch(),
-
     ets:select_delete(?TABLE, ?DELETE_MATCH_SPEC(T, ?HISTORY)),
     ets:select_delete(?RUNNING_TABLE, ?DELETE_MATCH_SPEC(T, ?RUNNING_HISTORY)),
 
