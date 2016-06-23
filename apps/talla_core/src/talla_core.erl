@@ -29,7 +29,8 @@ version() ->
 -spec platform() -> string().
 platform() ->
     ErlangVersion = erlang:system_info(otp_release),
-    lists:flatten(io_lib:format("~s ~s on ~s (OTP ~s)", [name(), version(), onion_os:name(), ErlangVersion])).
+    ErtsVersion   = erlang:system_info(version),
+    lists:flatten(io_lib:format("~s ~s on ~s (Erlang/OTP ~s, Erts ~s)", [name(), version(), onion_os:name(), ErlangVersion, ErtsVersion])).
 
 -spec uptime() -> non_neg_integer().
 uptime() ->
