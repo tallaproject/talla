@@ -21,7 +21,7 @@
 -type start_link_err() :: {already_started, pid()} | shutdown | term().
 -type start_link_ret() :: {ok, pid()} | ignore | {error, start_link_err()}.
 
--define(CHILD(I, Type), {I, {I, start_link, []}, permanent, 5000, Type, [I]}).
+-define(CHILD(I, Type), {I, {I, start_link, []}, permanent, 10000, Type, [I]}).
 
 -spec start_link() -> start_link_ret().
 start_link() ->
@@ -31,11 +31,11 @@ start_link() ->
 init([]) ->
     {ok, {{one_for_one, 10, 10}, [
             ?CHILD(talla_core_uptime_manager, worker),
-            ?CHILD(talla_core_geoip, worker),
             ?CHILD(talla_core_bandwidth, worker),
             ?CHILD(talla_core_identity_key, worker),
             ?CHILD(talla_core_onion_key, worker),
             ?CHILD(talla_core_ntor_key, worker),
             ?CHILD(talla_core_ed25519_master_key, worker),
-            ?CHILD(talla_core_ed25519_signing_key, worker)
+            ?CHILD(talla_core_ed25519_signing_key, worker),
+            ?CHILD(talla_core_geoip, worker)
         ]}}.

@@ -21,7 +21,7 @@
         ]).
 
 %% Generic Server Callbacks.
--export([init/0,
+-export([init/1,
          handle_call/3,
          handle_cast/2,
          handle_info/2,
@@ -44,7 +44,7 @@
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    proc_lib:start_link(?MODULE, init, []).
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 -spec country_from_ipv4(IP) -> binary()
     when
@@ -87,23 +87,19 @@ digest_ipv6() ->
     gen_server:call(?SERVER, digest_ipv6).
 
 %% @private
-init() ->
+init([]) ->
     new_table(?IPV4_TABLE),
     new_table(?IPV6_TABLE),
 
-    ok = proc_lib:init_ack({ok, self()}),
-    register(?MODULE, self()),
-
     IPv4Digest = load_ipv4_table(),
-    lager:notice("Using GeoIP IPv4 Database: ~s", [onion_base16:encode(IPv4Digest)]),
+    lager:notice("Loaded IPv4 GeoIP Database: ~s", [onion_base16:encode(IPv4Digest)]),
 
     IPv6Digest = load_ipv6_table(),
-    lager:notice("Using GeoIP IPv6 Database: ~s", [onion_base16:encode(IPv6Digest)]),
+    lager:notice("Loaded IPv6 GeoIP Database: ~s", [onion_base16:encode(IPv6Digest)]),
 
-    gen_server:enter_loop(?MODULE, [], #state {
-                                          digest_ipv4 = IPv4Digest,
-                                          digest_ipv6 = IPv6Digest
-                                         }).
+    {ok, #state {
+        digest_ipv4 = IPv4Digest,
+        digest_ipv6 = IPv6Digest }}.
 
 %% @private
 handle_call(digest_ipv4, _From, #state { digest_ipv4 = Digest } = State) ->
