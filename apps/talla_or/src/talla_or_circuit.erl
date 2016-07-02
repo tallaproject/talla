@@ -9,150 +9,267 @@
 %%% @end
 %%% ----------------------------------------------------------------------------
 -module(talla_or_circuit).
--behaviour(gen_fsm).
+-behaviour(gen_statem).
 
 %% API.
--export([start_link/2,
-         incoming_cell/2
+-export([start_link/0,
+         stop/1,
+         controlling_process/2,
+         dispatch/2
         ]).
 
 %% States.
--export([create/2,
-         created/2
+-export([create/3,
+         relay/3
         ]).
 
-%% Generic FSM Callbacks.
+%% Generic State Machine Callbacks.
 -export([init/1,
-         handle_event/3,
-         handle_sync_event/4,
-         handle_info/3,
-         terminate/3,
-         code_change/4
+         code_change/4,
+         terminate/3
         ]).
+
+%% Types.
+-export_type([t/0]).
+
+-type t() :: pid().
 
 -record(state, {
-        %% The CircuitID given from the Peer.
-        circuit_id    :: non_neg_integer(),
+        %% Control Process.
+        control_process :: pid(),
 
-        %% The Peer.
-        peer          :: pid(),
+        %% The ID of our circuit.
+        %% FIXME(ahf): Should be something like onion_circuit:id().
+        circuit :: non_neg_integer(),
 
-        %% Forward AES state and rolling hash.
-        forward_key   :: term(),
-        forward_hash  :: term(),
+        %% Key material used by this circuit.
+        forward_hash    :: binary(),
+        forward_aes_key :: term(),
 
-        %% Backward AES state and rolling hash.
-        backward_key  :: term(),
-        backward_hash :: term(),
+        backward_hash    :: binary(),
+        backward_aes_key :: term(),
 
-        %% RELAY_EARLY count.
-        relay_early_count :: non_neg_integer()
+        %% The number of relay_early cell's that have passed through
+        %% this circuit.
+        relay_early_count = 0 :: non_neg_integer()
     }).
 
--define(CELL(Cell), {incoming_cell, Cell}).
+-type state() :: #state {}.
 
--define(CELL(CircuitID, Command), ?CELL(#{ circuit := CircuitID,
-                                           command := Command } = Cell)).
--define(CELL(CircuitID, Command, Payload), ?CELL(#{ circuit := CircuitID,
-                                                    command := Command,
-                                                    payload := Payload } = Cell)).
+%% ----------------------------------------------------------------------------
+%% API.
+%% ----------------------------------------------------------------------------
 
--spec start_link(CircuitID, Peer) -> {ok, Pid} | {error, Reason}
+-spec start_link() -> {ok, Circuit} | {error, Reason}
     when
-        CircuitID :: non_neg_integer(),
-        Peer      :: pid(),
-        Pid       :: pid(),
-        Reason    :: term().
-start_link(CircuitID, Peer) when is_integer(CircuitID) ->
-    gen_fsm:start_link(?MODULE, [CircuitID, Peer], []).
+        Circuit :: t(),
+        Reason  :: term().
+start_link() ->
+    gen_statem:start_link(?MODULE, [], []).
 
--spec incoming_cell(Pid, Cell) -> ok
+-spec stop(Circuit) -> ok
     when
-        Pid  :: pid(),
-        Cell :: term().
-incoming_cell(Pid, Cell) ->
-    gen_fsm:send_event(Pid, {incoming_cell, Cell}).
+        Circuit :: t().
+stop(Circuit) ->
+    gen_statem:stop(Circuit).
+
+%% FIXME(ahf): controlling_peer?
+-spec controlling_process(Circuit, Peer) -> ok
+    when
+        Circuit :: t(),
+        Peer    :: talla_or_peer:t().
+controlling_process(Circuit, Pid) ->
+    gen_statem:cast(Circuit, {controlling_process, Pid}).
+
+-spec dispatch(Circuit, Cell) -> ok
+    when
+        Circuit :: t(),
+        Cell    :: onion_cell:t().
+dispatch(Circuit, Cell) ->
+    gen_statem:cast(Circuit, {dispatch, Cell}).
+
+%% ----------------------------------------------------------------------------
+%% Protocol States.
+%% ----------------------------------------------------------------------------
 
 %% @private
-%% FIXME(ahf): Move data parsing to onion_cell.
-create(?CELL(CircuitID, create2, #{ type := ntor, data := <<Fingerprint:20/binary, NTorPublicKey:32/binary, ClientPublicKey:32/binary>> }), #state { circuit_id = CircuitID, peer = Peer } = State) ->
-    RouterFingerprint   = talla_core_identity_key:fingerprint(),
-    RouterNTorPublicKey = talla_core_ntor_key:public_key(),
-    case {Fingerprint, NTorPublicKey} of
-        {RouterFingerprint, RouterNTorPublicKey} ->
-            {Response, KeyMaterial} = talla_core_ntor_key:server_handshake(ClientPublicKey, 72),
-            talla_or_peer_fsm:outgoing_cell(Peer, onion_cell:created2(CircuitID, Response)),
-            <<ForwardHash:20/binary, BackwardHash:20/binary, ForwardKey:16/binary, BackwardKey:16/binary>> = KeyMaterial,
-            {next_state, created, State#state { forward_hash  = crypto:hash_update(crypto:hash_init(sha), ForwardHash),
-                                                forward_key   = onion_aes:init(ForwardKey),
-                                                backward_hash = crypto:hash_update(crypto:hash_init(sha), BackwardHash),
-                                                backward_key  = onion_aes:init(BackwardKey) }};
-        {_, _} ->
-            lager:warning("Unknown create2"),
-            erlang:error(eek)
-    end.
+-spec create(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
+    when
+        EventType    :: gen_statem:event_type(),
+        EventContent :: term(),
+        StateData    :: state().
+create(internal, {cell, #{ command := create2,
+                           circuit := Circuit,
+                           payload := #{ data := <<Fingerprint:20/binary,
+                                                   NTorPublicKey:32/binary,
+                                                   PublicKey:32/binary>>
+                                        }}}, #state { circuit = undefined } = StateData) ->
+    %% We received a create2 cell and haven't already gotten a Circuit ID.
+    %% Update our state and reply to the create request.
+    lager:notice("Creating new relay: ~b", [Circuit]),
 
-created(?CELL(CircuitID, relay_early, #{ data := Payload }), #state { relay_early_count = RelayEarlyCount,
-                                                                      forward_key       = ForwardKey,
-                                                                      forward_hash      = ForwardHash } = State) when RelayEarlyCount =< 8 ->
-    {NewForwardKey, Data} = onion_aes:decrypt(ForwardKey, Payload),
-    PayloadDigest = digest(Data, ForwardHash),
-    case Data of
-        <<Command:8/integer, Recognized:16/integer, StreamID:16/integer, Digest:4/binary, Length:16/integer, Packet:Length/binary, _/binary>> when Recognized =:= 0 ->
-            case PayloadDigest of
-                <<Digest:4/binary, _/binary>> ->
-                    lager:warning("Relay: ~p -> ~p -> ~p", [Command, StreamID, Packet]),
-                    {next_state, created, State#state{ relay_early_count = RelayEarlyCount + 1,
-                                                       forward_key       = NewForwardKey,
-                                                       forward_hash      = crypto:hash_update(ForwardHash, PayloadDigest) }};
-                _ ->
-                    lager:warning("Failed Digest: ~w vs ~w", [PayloadDigest, Digest]),
-                    {next_state, created, State#state{ relay_early_count = RelayEarlyCount + 1,
-                                                       forward_key       = NewForwardKey }}
-            end;
+    %% Reply.
+    case ntor_handshake(Fingerprint, NTorPublicKey, PublicKey) of
+        {ok, HandshakeState} ->
+            %% Send created2 response.
+            send(onion_cell:created2(Circuit, maps:get(response, HandshakeState))),
 
-        _ ->
-            lager:warning("Failed decoding decrypted relay_early cell"),
-            {next_state, created, State#state{ relay_early_count = RelayEarlyCount + 1,
-                                               forward_key       = NewForwardKey }}
+            %% Update our state.
+            NewStateData = StateData#state {
+                circuit = Circuit
+            },
+
+            %% Continue to the normal loop.
+            {next_state, relay, NewStateData};
+
+        {error, _} = Error ->
+            {stop, Error, StateData}
     end;
 
-created(?CELL(Cell), State) ->
-    lager:warning("Created: ~p", [Cell]),
-    {next_state, created, State}.
+create(EventType, EventContent, StateData) ->
+    handle_event(EventType, EventContent, StateData).
+
+-spec relay(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
+    when
+        EventType    :: gen_statem:event_type(),
+        EventContent :: term(),
+        StateData    :: state().
+relay(EventType, EventContent, StateData) ->
+    handle_event(EventType, EventContent, StateData).
+
+%% ----------------------------------------------------------------------------
+%% Generic State Machine Callbacks.
+%% ----------------------------------------------------------------------------
 
 %% @private
-init([CircuitID, Peer]) ->
-    {ok, create, #state {
-            circuit_id        = CircuitID,
-            peer              = Peer,
-            relay_early_count = 0
-        }}.
+%% This function is used to initialize our state machine.
+init([]) ->
+    %% We want to trap exit signals.
+    process_flag(trap_exit, true),
+
+    %% Our initial state.
+    StateData = #state {
+        forward_hash  = crypto:hash_init(sha),
+        backward_hash = crypto:hash_init(sha)
+    },
+
+    %% We start in the create state.
+    {callback_method(), create, StateData}.
 
 %% @private
-handle_event(Request, StateName, State) ->
-    lager:warning("Unhandled event: ~p", [Request]),
-    {next_state, StateName, State}.
+%% Call when we are doing a code change (live upgrade/downgrade).
+-spec code_change(Version, StateName, StateData, Extra) -> {NewCallbackMode, NewStateName, NewStateData}
+    when
+        Version         :: {down, term()} | term(),
+        StateName       :: atom(),
+        StateData       :: state(),
+        Extra           :: term(),
+        NewCallbackMode :: atom(),
+        NewStateName    :: StateName,
+        NewStateData    :: StateData.
+code_change(_Version, StateName, StateData, _Extra) ->
+    {callback_method(), StateName, StateData}.
 
 %% @private
-handle_sync_event(Request, _From, StateName, State) ->
-    lager:warning("Unhandled sync event: ~p", [Request]),
-    {next_state, StateName, State}.
-
-%% @private
-handle_info(Info, StateName, State) ->
-    lager:warning("Unhandled info: ~p", [Info]),
-    {next_state, StateName, State}.
-
-%% @private
-code_change(_OldVsn, StateName, State, _Extra) ->
-    {ok, StateName, State}.
-
-%% @private
-terminate(_Reason, _StateName, _State) ->
+%% Called before our process is terminated.
+-spec terminate(Reason, StateName, StateData) -> ok
+    when
+        Reason    :: term(),
+        StateName :: atom(),
+        StateData :: state().
+terminate(_Reason, _StateName, _StateData) ->
     ok.
 
+%% ----------------------------------------------------------------------------
+%% Generic State Handler.
+%% ----------------------------------------------------------------------------
+
 %% @private
-digest(Data, Context) ->
-    <<A:5/binary, _:32/integer, Rest/binary>> = Data,
-    crypto:hash_final(crypto:hash_update(Context, <<A/binary, 0:32/integer, Rest/binary>>)).
+%% Handle events that are generic for all states. All state functions should
+%% have a catch all function clause that dispatches onto this function.
+%%
+%% This function should never have a reason to return something other than
+%% {keep_state, StateData} or {stop, Reason, StateData}.
+-spec handle_event(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
+    when
+        EventType    :: gen_statem:event_type(),
+        EventContent :: term(),
+        StateData    :: state().
+handle_event(internal, {cell_sent, _Cell}, StateData) ->
+    %% Ignore this.
+    {keep_state, StateData};
+
+handle_event(cast, {dispatch, #{ command := Command,
+                                 circuit := Circuit } = Cell}, StateData) ->
+    lager:notice("Relay: ~p (Circuit: ~b)", [Command, Circuit]),
+    {keep_state, StateData, [{next_event, internal, {cell, Cell}}]};
+
+handle_event(cast, {send, #{ command := Command,
+                             circuit := Circuit } = Cell}, #state { control_process = ControlProcess } = StateData) ->
+    lager:notice("Relay Response: ~p (Circuit: ~b)", [Command, Circuit]),
+    talla_or_peer:send(ControlProcess, Cell),
+    {keep_state, StateData, [{next_event, internal, {cell_sent, Cell}}]};
+
+handle_event(cast, {controlling_process, Pid}, StateData) ->
+    %% Set our control process.
+
+    NewStateData = StateData#state {
+        control_process = Pid
+    },
+
+    {keep_state, NewStateData};
+
+handle_event(EventType, EventContent, StateData) ->
+    %% Looks like none of the above handlers was able to handle this message.
+    %% Continue with the current state and hope for the best, but emit a
+    %% warning before continuing.
+    lager:warning("Unhandled event: ~p (Type: ~p)", [EventContent, EventType]),
+    {keep_state, StateData}.
+
+%% ----------------------------------------------------------------------------
+%% Utility Functions.
+%% ----------------------------------------------------------------------------
+
+%% @private
+%% This function returns the callback method used by gen_statem. Look at
+%% gen_statem's documentation for further information.
+-spec callback_method() -> gen_statem:callback_mode().
+callback_method() ->
+    state_functions.
+
+%% @private
+-spec send(Circuit, Cell) -> ok
+    when
+        Circuit :: t(),
+        Cell    :: onion_cell:t().
+send(Circuit, Cell) ->
+    gen_statem:cast(Circuit, {send, Cell}).
+
+%% @private
+-spec send(Cell) -> ok
+    when
+        Cell :: onion_cell:t().
+send(Cell) ->
+    send(self(), Cell).
+
+%% @private
+%% Check if a given set of keys matches ours.
+ntor_handshake(Fingerprint, PublicKey, ClientPublicKey) ->
+    OurFingerprint = talla_core_identity_key:fingerprint(),
+    OurPublicKey   = talla_core_ntor_key:public_key(),
+    case Fingerprint =:= OurFingerprint andalso PublicKey =:= OurPublicKey of
+        true ->
+            {Response, <<FHash:20/binary, BHash:20/binary,
+                         FKey:16/binary, BKey:16/binary>>} = talla_core_ntor_key:server_handshake(ClientPublicKey, 72),
+
+            {ok, #{ response => Response,
+
+                    forward_hash  => FHash,
+                    backward_hash => BHash,
+
+                    forward_aes_key  => onion_aes:init(FKey),
+                    backward_aes_key => onion_aes:init(BKey) }};
+
+        false ->
+            {error, key_mismatch}
+    end.
