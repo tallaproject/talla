@@ -13,12 +13,7 @@
 
 %% API.
 -export([start_link/1,
-         send/2
-        ]).
-
-%% Private API.
--export([lookup/1,
-         await/1
+         enqueue/2
         ]).
 
 %% Generic Server Callbacks.
@@ -30,52 +25,35 @@
          code_change/3
         ]).
 
+%% Types.
+-export_type([t/0]).
+
+-type t() :: pid().
+
 -record(state, {
-        socket  :: ssl:socket(),
-        peer    :: pid(),
+        socket  :: ssl:sslsocket(),
         queue   :: queue:queue(),
         limit   :: none | pid()
     }).
 
--spec start_link(Socket) -> {ok, pid()} | {error, Reason}
+-spec start_link(Socket) -> {ok, t()} | {error, Reason}
     when
         Socket :: ssl:socket(),
         Reason :: term().
 start_link(Socket) ->
     gen_server:start_link(?MODULE, [Socket], []).
 
--spec send(Pid, Packet) -> ok
+-spec enqueue(Pid, Packet) -> ok
     when
         Pid    :: pid(),
         Packet :: iolist().
-send(Pid, Packet) ->
-    gen_server:cast(Pid, {send, Packet}).
-
-%% @private
--spec lookup(Socket) -> {ok, Pid} | {error, Reason}
-    when
-        Socket :: ssl:socket(),
-        Pid    :: pid(),
-        Reason :: term().
-lookup(Socket) ->
-    onion_registry:lookup(name(Socket)).
-
-%% @private
--spec await(Socket) -> {ok, Pid} | {error, Reason}
-    when
-        Socket :: ssl:socket(),
-        Pid    :: pid(),
-        Reason :: term().
-await(Socket) ->
-    onion_registry:await(name(Socket)).
+enqueue(Pid, Packet) ->
+    gen_server:cast(Pid, {enqueue, Packet}).
 
 %% @private
 init([Socket]) ->
-    register(Socket),
-    {ok, Peer} = talla_or_peer:await(Socket),
     {ok, #state {
             socket = Socket,
-            peer   = Peer,
             queue  = queue:new(),
             limit  = none
         }}.
@@ -86,7 +64,7 @@ handle_call(Request, _From, State) ->
     {reply, unhandled, State}.
 
 %% @private
-handle_cast({send, Packet}, #state { queue = Queue, limit = Limit } = State) ->
+handle_cast({enqueue, Packet}, #state { queue = Queue, limit = Limit } = State) ->
     NewQueue = queue:in(Packet, Queue),
     case Limit of
         none ->
@@ -102,7 +80,7 @@ handle_cast(Message, State) ->
     {noreply, State}.
 
 %% @private
-handle_info({limit, continue}, #state { peer = Peer, socket = Socket, queue = Queue } = State) ->
+handle_info({limit, continue}, #state { socket = Socket, queue = Queue } = State) ->
     case queue:is_empty(Queue) of
         true ->
             {noreply, State#state { limit = none }};
@@ -136,17 +114,3 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
-
-%% @private
--spec name(Socket) -> term()
-    when
-        Socket :: ssl:socket().
-name(Socket) ->
-    {?MODULE, Socket}.
-
-%% @private
--spec register(Socket) -> term()
-    when
-        Socket :: ssl:socket().
-register(Socket) ->
-    onion_registry:register(name(Socket)).
