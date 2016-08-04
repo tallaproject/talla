@@ -225,6 +225,11 @@ await_connect(cast, {connect, Address, Port}, undefined) ->
 
         {error, Reason} ->
             lager:warning("Unable to connect to onion router at ~s:~b: ~p", [inet:ntoa(Address), Port, Reason]),
+
+            %% FIXME(ahf): Consider a:
+            %% talla_or_peer_manager:peer_error(Reason).
+            talla_or_peer_manager:timeout(),
+
             {stop, normal, undefined}
     end;
 
@@ -338,6 +343,8 @@ outbound_handshake(internal, {cell_sent, #{ command := certs,
         receive_context    = undefined,
         send_context       = undefined
     },
+
+    talla_or_peer_manager:connected(),
 
     {next_state, idle, NewStateData};
 
