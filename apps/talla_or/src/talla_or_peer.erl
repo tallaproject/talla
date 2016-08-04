@@ -834,9 +834,8 @@ circuit_dispatch(#state { circuits = Circuits } = StateData, #{ circuit := Circu
             StateData;
 
         undefined ->
-            {ok, Pid} = talla_or_circuit:start_link(),
+            {ok, Pid} = talla_or_circuit:start_link(CircuitID),
 
-            talla_or_circuit:controlling_process(Pid, self()),
             talla_or_circuit:dispatch(Pid, Cell),
 
             %% Update our state.
