@@ -135,7 +135,7 @@ relay(internal, {cell, #{ command := relay_early,
                                                                        forward_hash      = FHash,
                                                                        relay_early_count = RelayEarlyCount } = StateData) ->
     case decrypt(FAESKey, FHash, Payload) of
-        {recognized, NewAESKey, #{ command := 14,
+        {recognized, NewAESKey, #{ command := relay_extend2,
                                    stream  := 0,
                                    payload := #{ data  := Data,
                                                  type  := ntor,
@@ -304,7 +304,7 @@ decrypt(AESKey, Context, Payload) ->
     MessageDigest = digest(Context, Message),
     case Message of
         <<Command:8/integer, 0:16/integer, StreamID:16/integer, MessageDigest:4/binary, Length:16/integer, Packet:Length/binary, _/binary>> ->
-            {recognized, NewAESKey, #{ command => Command,
+            {recognized, NewAESKey, #{ command => decode_command(Command),
                                        stream  => StreamID,
                                        payload => decode_relay_packet(Command, Packet) } };
 
@@ -335,6 +335,39 @@ decode_link_type(2) ->
     legacy_identity;
 decode_link_type(_) ->
     unknown.
+
+decode_command(1) ->
+    relay_begin;
+decode_command(2) ->
+    relay_data;
+decode_command(3) ->
+    relay_end;
+decode_command(4) ->
+    relay_connected;
+decode_command(5) ->
+    relay_sendme;
+decode_command(6) ->
+    relay_extend;
+decode_command(7) ->
+    relay_extended;
+decode_command(8) ->
+    relay_truncate;
+decode_command(9) ->
+    relay_truncated;
+decode_command(10) ->
+    relay_drop;
+decode_command(11) ->
+    relay_resolve;
+decode_command(12) ->
+    relay_resolved;
+decode_command(13) ->
+    relay_begin_dir;
+decode_command(14) ->
+    relay_extend2;
+decode_command(15) ->
+    relay_extended2;
+decode_command(X) ->
+    {unknown_command, X}.
 
 decode_extend2_cell(<<NSpec:8/integer, Rest/binary>>) ->
     {Links, <<HType:16/integer, HLen:16/integer, HData:HLen/bytes, _/binary>>} = decode_extend2_link_specifiers(Rest, [], NSpec),
