@@ -34,8 +34,9 @@
 -type t() :: pid().
 
 -record(state, {
+        peer :: pid(),
+
         %% The ID of our circuit.
-        %% FIXME(ahf): Should be something like onion_circuit:id().
         circuit :: non_neg_integer(),
 
         %% Key material used by this circuit.
@@ -62,7 +63,7 @@
         Circuit   :: t(),
         Reason    :: term().
 start_link(CircuitID) ->
-    gen_statem:start_link(?MODULE, [CircuitID], []).
+    gen_statem:start_link(?MODULE, [CircuitID, self()], []).
 
 -spec stop(Circuit) -> ok
     when
@@ -169,13 +170,14 @@ await_peer_connect(EventType, EventContent, StateData) ->
 
 %% @private
 %% This function is used to initialize our state machine.
-init([CircuitID]) ->
+init([CircuitID, Peer]) ->
     %% We want to trap exit signals.
     process_flag(trap_exit, true),
 
     %% Our initial state.
     StateData = #state {
-        circuit = CircuitID
+        circuit = CircuitID,
+        peer    = Peer
     },
 
     %% We start in the create state.
@@ -229,11 +231,11 @@ handle_event(cast, {dispatch, #{ command := Command,
     lager:notice("Relay: ~p (Circuit: ~b)", [Command, Circuit]),
     {keep_state, StateData, [{next_event, internal, {cell, Cell}}]};
 
-%handle_event(cast, {send, #{ command := Command,
-%                             circuit := Circuit } = Cell}, #state { control_process = ControlProcess } = StateData) ->
-%    lager:notice("Relay Response: ~p (Circuit: ~b)", [Command, Circuit]),
-%    talla_or_peer:send(ControlProcess, Cell),
-%    {keep_state, StateData, [{next_event, internal, {cell_sent, Cell}}]};
+handle_event(cast, {send, #{ command := Command,
+                             circuit := Circuit } = Cell}, #state { peer = Peer } = StateData) ->
+    lager:notice("Relay Response: ~p (Circuit: ~b)", [Command, Circuit]),
+    talla_or_peer:send(Peer, Cell),
+    {keep_state, StateData, [{next_event, internal, {cell_sent, Cell}}]};
 
 handle_event(EventType, EventContent, StateData) ->
     %% Looks like none of the above handlers was able to handle this message.
