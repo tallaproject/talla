@@ -15,7 +15,6 @@
 -export([start_link/0,
          stop/1,
          send/2,
-         circuit/2,
          connect/3
         ]).
 
@@ -146,19 +145,6 @@ stop(Peer) ->
         Cell :: onion_cell:t().
 send(Peer, Cell) ->
     gen_statem:cast(Peer, {send, Cell}).
-
-%% @doc Get the Circuit process from a given CircuitID
-%%
-%% This function returns the Pid of a given CircuitID, if it exists.
-%%
-%% @end
--spec circuit(Peer, CircuitID) -> Circuit | not_found
-    when
-        Peer      :: t(),
-        CircuitID :: non_neg_integer(),
-        Circuit   :: talla_or_circuit:t().
-circuit(Peer, CircuitID) ->
-    gen_statem:call(Peer, {circuit, CircuitID}).
 
 %% @doc Connect to an onion router.
 -spec connect(Peer, Address, Port) -> ok
@@ -710,10 +696,6 @@ handle_event(info, {'EXIT', Pid, normal}, #state { receive_limit = Pid } = State
     %% We trapped an exit from our receive_limit process from the
     %% rate-limiting system. This can safely be ignored.
     {keep_state, StateData};
-
-handle_event({call, From}, {circuit, CircuitID}, #state { circuits = Circuits } = StateData) ->
-    Reply = maps:get(CircuitID, Circuits, not_found),
-    {keep_state, StateData, [{reply, From, Reply}]};
 
 handle_event(info, cell_timeout, StateData) ->
     %% Handle that we haven't received a cell in a certain period of time.
