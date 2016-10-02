@@ -19,7 +19,7 @@
         ]).
 
 %% States.
--export([idle/3,
+-export([normal/3,
 
          await_connect/3,
          outbound_handshake/3,
@@ -160,18 +160,57 @@ connect(Peer, Address, Port) ->
 %% ----------------------------------------------------------------------------
 
 %% @private
-%% Test state.
-%% FIXME(ahf): Remove.
--spec idle(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
+-spec normal(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
     when
         EventType    :: gen_statem:event_type(),
         EventContent :: term(),
         StateData    :: state().
-idle(internal, {cell, #{ circuit := Circuit } = Cell}, StateData) when Circuit =/= 0 ->
-    %% FIXME(ahf): Remove.
-    {keep_state, circuit_dispatch(StateData, Cell)};
+normal(internal, {cell, #{ command := create2,
+                           circuit := CircuitID } = Cell}, #state { circuits = Circuits } = StateData) when CircuitID =/= 0 ->
+    case maps:get(CircuitID, Circuits, not_found) of
+        not_found ->
+            %% FIXME(ahf): Generate new CircuitID here.
+            {ok, Pid} = talla_or_circuit:start_link(CircuitID),
 
-idle(EventType, EventContent, StateData) ->
+            %% Update our state.
+            NewStateData = StateData#state {
+                circuits = maps:put(CircuitID, Pid, Circuits)
+            },
+
+            %% Forward the create2 cell to the circuit.
+            talla_or_circuit:dispatch(Pid, Cell),
+
+            {keep_state, NewStateData};
+
+        Pid when is_pid(Pid) ->
+            lager:warning("Received create2 cell on known circuit: ~p", [Cell]),
+            {keep_state, StateData}
+    end;
+
+normal(internal, {cell, #{ command := destroy,
+                           circuit := CircuitID } = Cell}, #state { circuits = Circuits } = StateData) when CircuitID =/= 0 ->
+    case maps:get(CircuitID, Circuits, not_found) of
+        not_found ->
+            lager:warning("Received destroy cell on unknown circuit: ~p", [Cell]),
+            {keep_state, StateData};
+
+        Pid when is_pid(Pid) ->
+            talla_or_circuit:dispatch(Pid, Cell),
+            {keep_state, StateData}
+    end;
+
+normal(internal, {cell, #{ circuit := CircuitID } = Cell}, #state { circuits = Circuits } = StateData) when CircuitID =/= 0 ->
+    case maps:get(CircuitID, Circuits, not_found) of
+        not_found ->
+            lager:warning("Received cell on unknown circuit: ~p", [Cell]),
+            {keep_state, StateData};
+
+        Pid when is_pid(Pid) ->
+            talla_or_circuit:dispatch(Pid, Cell),
+            {keep_state, StateData}
+    end;
+
+normal(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
 
 -spec await_connect(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
@@ -332,7 +371,7 @@ outbound_handshake(internal, {cell_sent, #{ command := certs,
 
     talla_or_peer_manager:connected(),
 
-    {next_state, idle, NewStateData};
+    {next_state, normal, NewStateData};
 
 outbound_handshake(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
@@ -450,7 +489,7 @@ authenticate(internal, {cell, #{ command := netinfo,
         receive_context = undefined,
         send_context    = undefined
     },
-    {next_state, idle, NewStateData};
+    {next_state, normal, NewStateData};
 
 authenticate(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
@@ -803,32 +842,6 @@ identity_certificate() ->
     Certificate.
 
 %% @private
-%% Relay a cell to a talla_or_circuit process. Create the process if it doesn't exist.
--spec circuit_dispatch(StateData, Cell) -> NewStateData
-    when
-        StateData    :: state(),
-        Cell         :: onion_cell:t(),
-        NewStateData :: StateData.
-circuit_dispatch(#state { circuits = Circuits } = StateData, #{ circuit := CircuitID } = Cell) ->
-    case maps:get(CircuitID, Circuits, undefined) of
-        Pid when is_pid(Pid) ->
-            talla_or_circuit:dispatch(Pid, Cell),
-            StateData;
-
-        undefined ->
-            {ok, Pid} = talla_or_circuit:start_link(CircuitID),
-
-            talla_or_circuit:dispatch(Pid, Cell),
-
-            %% Update our state.
-            NewStateData = StateData#state {
-                circuits = maps:put(CircuitID, Pid, Circuits)
-            },
-
-            NewStateData
-    end.
-
-%% @private
 %% Start the cell timer.
 -spec start_cell_timer() -> reference().
 start_cell_timer() ->
@@ -873,3 +886,45 @@ state(Socket) ->
         last_cell_received = erlang:system_time(),
         last_cell_timer    = start_cell_timer()
     }.
+
+%% @private
+%% Generate a CircuitID.
+-spec create_circuit_id(State) -> {ok, CircuitID} | {error, Reason}
+    when
+        State     :: state(),
+        CircuitID :: non_neg_integer(),
+        Reason    :: Reason.
+create_circuit_id(#state { protocol_version = 4,
+                           direction        = inbound,
+                           circuits         = Circuits }) ->
+    create_circuit_id(1, 4, Circuits);
+
+create_circuit_id(#state { protocol_version = 4,
+                           direction        = outbound,
+                           circuits         = Circuits }) ->
+    create_circuit_id(0, 4, Circuits);
+
+create_circuit_id(#state { protocol_version = 3,
+                           circuits         = Circuits }) ->
+    %% FIXME(ahf): ...
+    {error, not_supported};
+
+create_circuit_id(_) ->
+    {error, unknown_protocol}.
+
+create_circuit_id(MSB, Size, Circuits) ->
+    create_circuit_id(MSB, Size, Circuits, 120).
+
+create_circuit_id(MSB, Size, Circuits, Try) ->
+    <<_:1/integer, Random/binary>> = onion_random:bytes(Size),
+    CircuitID = binary:decode_unsigned(<<MSB:1/integer, Random/binary>>),
+    case maps:get(Random, Circuits, not_found) of
+        not_found ->
+            {ok, CircuitID};
+
+        _ ->
+            create_circuit_id(MSB, Size, Circuits, Try - 1)
+    end;
+
+create_circuit_id(_, _, _, 0) ->
+    {error, unable_to_find_circuit_id}.
