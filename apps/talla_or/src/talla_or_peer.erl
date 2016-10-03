@@ -31,7 +31,8 @@
 %% Generic State Machine Callbacks.
 -export([init/1,
          code_change/4,
-         terminate/3
+         terminate/3,
+         callback_mode/0
         ]).
 
 %% Ranch Callbacks.
@@ -504,7 +505,7 @@ init([]) ->
     %% We want to trap exit signals.
     process_flag(trap_exit, true),
 
-    {callback_method(), await_connect, undefined}.
+    {ok, await_connect, undefined}.
 
 %% @private
 %% Call when we are doing a code change (live upgrade/downgrade).
@@ -518,7 +519,7 @@ init([]) ->
         NewStateName    :: StateName,
         NewStateData    :: StateData.
 code_change(_Version, StateName, StateData, _Extra) ->
-    {callback_method(), StateName, StateData}.
+    {ok, StateName, StateData}.
 
 %% @private
 %% Called before our process is terminated.
@@ -596,7 +597,7 @@ init(Ref, Socket, _Transport, _Options) ->
     },
 
     %% Enter the Generic State Machine loop.
-    gen_statem:enter_loop(?MODULE, [], callback_method(), inbound_version_handshake, NewStateData).
+    gen_statem:enter_loop(?MODULE, [], inbound_version_handshake, NewStateData).
 
 %% ----------------------------------------------------------------------------
 %% Generic State Handler.
@@ -752,11 +753,10 @@ handle_event(EventType, EventContent, StateData) ->
 %% Utility Functions.
 %% ----------------------------------------------------------------------------
 
-%% @private
 %% This function returns the callback method used by gen_statem. Look at
 %% gen_statem's documentation for further information.
--spec callback_method() -> gen_statem:callback_mode().
-callback_method() ->
+-spec callback_mode() -> gen_statem:callback_mode().
+callback_mode() ->
     state_functions.
 
 %% @private
