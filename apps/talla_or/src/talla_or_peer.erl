@@ -509,13 +509,12 @@ init([]) ->
 
 %% @private
 %% Call when we are doing a code change (live upgrade/downgrade).
--spec code_change(Version, StateName, StateData, Extra) -> {NewCallbackMode, NewStateName, NewStateData}
+-spec code_change(Version, StateName, StateData, Extra) -> {ok, NewStateName, NewStateData}
     when
         Version         :: {down, term()} | term(),
         StateName       :: atom(),
         StateData       :: state(),
         Extra           :: term(),
-        NewCallbackMode :: atom(),
         NewStateName    :: StateName,
         NewStateData    :: StateData.
 code_change(_Version, StateName, StateData, _Extra) ->
