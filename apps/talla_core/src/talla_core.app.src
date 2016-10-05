@@ -6,7 +6,6 @@
     {mod, {talla_core_app, []}},
     {applications, [
         crypto,
-        exometer_core,
         kernel,
         lager,
         onion,
