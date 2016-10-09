@@ -210,7 +210,13 @@ normal(internal, {cell, #{ command := destroy,
 
         Pid when is_pid(Pid) ->
             talla_or_circuit:dispatch(Pid, Cell),
-            {keep_state, StateData}
+
+            %% Update our state.
+            NewStateData = StateData#state {
+                circuits = maps:remove(CircuitID, Circuits)
+            },
+
+            {keep_state, NewStateData}
     end;
 
 normal(internal, {cell, #{ circuit := CircuitID } = Cell}, #state { circuits = Circuits } = StateData) when CircuitID =/= 0 ->
