@@ -789,7 +789,7 @@ handle_event(EventType, EventContent, StateData) ->
     %% Looks like none of the above handlers was able to handle this message.
     %% Continue with the current state and hope for the best, but emit a
     %% warning before continuing.
-    lager:warning("Unhandled event: ~p (Type: ~p)", [EventContent, EventType]),
+    lager:warning("Unhandled peer event: ~p (Type: ~p)", [EventContent, EventType]),
     {keep_state, StateData}.
 
 %% ----------------------------------------------------------------------------
