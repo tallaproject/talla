@@ -25,7 +25,8 @@
 %% Generic State Machine Callbacks.
 -export([init/1,
          code_change/4,
-         terminate/3
+         terminate/3,
+         callback_mode/0
         ]).
 
 %% Types.
@@ -170,18 +171,18 @@ await_peer_connect(EventType, EventContent, StateData) ->
 
 %% @private
 %% This function is used to initialize our state machine.
-init([CircuitID, Peer]) ->
+init([CircuitID, Parent]) ->
     %% We want to trap exit signals.
     process_flag(trap_exit, true),
 
     %% Our initial state.
     StateData = #state {
         circuit = CircuitID,
-        peer    = Peer
+        parent  = Parent
     },
 
     %% We start in the create state.
-    {callback_method(), create, StateData}.
+    {ok, create, StateData}.
 
 %% @private
 %% Call when we are doing a code change (live upgrade/downgrade).
@@ -195,7 +196,7 @@ init([CircuitID, Peer]) ->
         NewStateName    :: StateName,
         NewStateData    :: StateData.
 code_change(_Version, StateName, StateData, _Extra) ->
-    {callback_method(), StateName, StateData}.
+    {ok, StateName, StateData}.
 
 %% @private
 %% Called before our process is terminated.
