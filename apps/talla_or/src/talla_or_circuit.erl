@@ -35,7 +35,8 @@
 -type t() :: pid().
 
 -record(state, {
-        peer :: pid(),
+        parent  :: talla_or_peer:t(),
+        sibling :: t(),
 
         %% The ID of our circuit.
         circuit :: non_neg_integer(),
@@ -49,7 +50,9 @@
 
         %% The number of relay_early cell's that have passed through
         %% this circuit.
-        relay_early_count = 0 :: non_neg_integer()
+        relay_early_count = 0 :: non_neg_integer(),
+
+        extend_data :: binary()
     }).
 
 -type state() :: #state {}.
@@ -77,7 +80,7 @@ stop(Circuit) ->
         Circuit :: t(),
         Cell    :: onion_cell:t().
 dispatch(Circuit, Cell) ->
-    gen_statem:cast(Circuit, {dispatch, Cell}).
+    gen_statem:cast(Circuit, {dispatch, self(), Cell}).
 
 %% ----------------------------------------------------------------------------
 %% Protocol States.
@@ -129,6 +132,11 @@ create(EventType, EventContent, StateData) ->
         EventType    :: gen_statem:event_type(),
         EventContent :: term(),
         StateData    :: state().
+relay(internal, {cell, #{ command := destroy,
+                          circuit := CircuitID }}, StateData) ->
+    lager:warning("Tearing down circuit: ~p", [CircuitID]),
+    {keep_state, StateData};
+
 relay(internal, {cell, #{ command := relay_early,
                           circuit := Circuit,
                           payload := #{ data := Payload } }}, #state { circuit           = Circuit,
@@ -141,23 +149,51 @@ relay(internal, {cell, #{ command := relay_early,
                                    payload := #{ data  := Data,
                                                  type  := ntor,
                                                  links := [#{ type    := tls_over_ipv4,
-                                                              payload := {Address, Port} }, _] }}} ->
-            lager:warning("Bueno"),
-            talla_or_peer_manager:connect(Address, Port);
+                                                              payload := {Address, Port} } | _] }}} ->
+            talla_or_peer_manager:connect(Address, Port),
+
+            %% Update our state.
+            NewStateData = StateData#state {
+                relay_early_count = RelayEarlyCount + 1,
+
+                %% FIXME(ahf): Better name.
+                extend_data = Data
+            },
+
+            {keep_state, NewStateData};
 
         relay ->
-            lager:warning("Relay");
+            lager:warning("Relay"),
+            {keep_state, StateData};
 
         NoMatch ->
-            lager:warning("No match: ~p", [NoMatch])
-    end,
+            lager:warning("No match: ~p", [NoMatch]),
+            {keep_state, StateData}
+    end;
+
+relay(info, {peer_connected, _, Peer}, #state { circuit     = CircuitID,
+                                                extend_data = ExtendData } = StateData) ->
+    lager:warning("Peer connected: ~p", [Peer]),
 
     %% Update our state.
-    NewStateData = StateData#state {
-        relay_early_count = RelayEarlyCount + 1
-    },
+    case talla_or_peer:create_circuit(Peer) of
+        {ok, Circuit} ->
+            lager:warning("Sibling: ~p", [Circuit]),
 
-    {keep_state, NewStateData};
+            %% Update our state.
+            NewStateData = StateData#state {
+                sibling = Circuit
+            },
+
+            {keep_state, NewStateData};
+
+        {error, Reason} ->
+            lager:warning("Unable to create circuit"),
+
+            %% FIXME(ahf): terminate ourself.
+
+            {keep_state, StateData}
+    end;
 
 relay(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
@@ -227,34 +263,63 @@ handle_event(internal, {cell_sent, _Cell}, StateData) ->
     %% Ignore this.
     {keep_state, StateData};
 
-handle_event(cast, {dispatch, #{ command := Command,
-                                 circuit := Circuit } = Cell}, #state { circuit = Circuit } = StateData) ->
-    lager:notice("Relay: ~p (Circuit: ~b)", [Command, Circuit]),
+handle_event(cast, {dispatch, Source, #{ command := Command,
+                                         circuit := Circuit } = Cell}, #state { circuit = Circuit,
+                                                                                parent  = Parent,
+                                                                                sibling = Sibling } = StateData) ->
+    case Source of
+        Parent ->
+            lager:notice("Relay from parent: ~p (Circuit: ~b)", [Command, Circuit]),
+            ok;
+
+        Sibling ->
+            lager:notice("Relay from sibling: ~p (Circuit: ~b)", [Command, Circuit]),
+            ok;
+
+        _ ->
+            lager:warning("Relay from unknown (~p): ~p (Circuit: ~b)", [Source, Command, Circuit]),
+            ok
+    end,
     {keep_state, StateData, [{next_event, internal, {cell, Cell}}]};
 
 handle_event(cast, {send, #{ command := Command,
-                             circuit := Circuit } = Cell}, #state { peer = Peer } = StateData) ->
+                             circuit := Circuit } = Cell}, #state { parent = Parent } = StateData) ->
     lager:notice("Relay Response: ~p (Circuit: ~b)", [Command, Circuit]),
-    talla_or_peer:send(Peer, Cell),
+    talla_or_peer:send(Parent, Cell),
     {keep_state, StateData, [{next_event, internal, {cell_sent, Cell}}]};
 
 handle_event(EventType, EventContent, StateData) ->
     %% Looks like none of the above handlers was able to handle this message.
     %% Continue with the current state and hope for the best, but emit a
     %% warning before continuing.
-    lager:warning("Unhandled event: ~p (Type: ~p)", [EventContent, EventType]),
+    lager:warning("Unhandled circuit event: ~p (Type: ~p)", [EventContent, EventType]),
     {keep_state, StateData}.
 
 %% ----------------------------------------------------------------------------
 %% Utility Functions.
 %% ----------------------------------------------------------------------------
 
-%% @private
 %% This function returns the callback method used by gen_statem. Look at
 %% gen_statem's documentation for further information.
--spec callback_method() -> gen_statem:callback_mode().
-callback_method() ->
+-spec callback_mode() -> gen_statem:callback_mode().
+callback_mode() ->
     state_functions.
+
+%% @private
+%% Update the send or receive context (if it is still needed to be updated).
+-spec update_context(Context, Packet) -> NewContext
+    when
+        Context    :: binary(),
+        Packet     :: binary(),
+        NewContext :: Context.
+update_context(Context, Packet) ->
+    case Context of
+        Context when is_binary(Context) ->
+            crypto:hash_update(Context, Packet);
+
+        _ ->
+            Context
+    end.
 
 %% @private
 -spec send(Circuit, Cell) -> ok
