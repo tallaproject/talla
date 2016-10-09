@@ -15,7 +15,8 @@
 -export([start_link/0,
          stop/1,
          send/2,
-         connect/3
+         connect/3,
+         create_circuit/1
         ]).
 
 %% States.
@@ -107,6 +108,9 @@
 %% Connect timeout to external OR's.
 -define(CONNECT_TIMEOUT, timer:seconds(30)).
 
+%% Max tries when generating a new Circuit ID before giving up.
+-define(CIRCUIT_ID_CREATION_ATTEMPTS, 100).
+
 %% ----------------------------------------------------------------------------
 %% API.
 %% ----------------------------------------------------------------------------
@@ -155,6 +159,15 @@ send(Peer, Cell) ->
         Port    :: inet:port_number().
 connect(Peer, Address, Port) ->
     gen_statem:cast(Peer, {connect, Address, Port}).
+
+%% @doc Create a new circuit.
+-spec create_circuit(Peer) -> {ok, Circuit} | {error, Reason}
+    when
+        Peer    :: t(),
+        Circuit :: talla_or_circuit:t(),
+        Reason  :: term().
+create_circuit(Peer) ->
+    gen_statem:call(Peer, create_circuit).
 
 %% ----------------------------------------------------------------------------
 %% Protocol States.
@@ -741,6 +754,31 @@ handle_event(info, cell_timeout, StateData) ->
     %% FIXME(ahf): Implement.
     {keep_state, StateData};
 
+handle_event({call, From}, create_circuit, #state { circuits = Circuits } = StateData) ->
+    case create_circuit_id(StateData) of
+        {ok, CircuitID} ->
+            {ok, Circuit} = talla_or_circuit:start_link(CircuitID),
+
+            lager:notice("Creating new circuit: ~p (~p)", [CircuitID, Circuit]),
+
+            %% Update our state.
+            NewStateData = StateData#state {
+                circuits = maps:put(CircuitID, Circuit, Circuits)
+            },
+
+            %% Reply with a reference to the newly created circuit process.
+            gen_statem:reply(From, {ok, Circuit}),
+
+            {keep_state, NewStateData};
+
+        {error, _} = Error ->
+            lager:warning("Unable to create new circuit: currently allocated circuits: ~b", [maps:size(Circuits)]),
+
+            gen_statem:reply(From, Error),
+
+            {keep_state, StateData}
+    end;
+
 handle_event(EventType, EventContent, StateData) ->
     %% Looks like none of the above handlers was able to handle this message.
     %% Continue with the current state and hope for the best, but emit a
@@ -894,36 +932,20 @@ state(Socket) ->
         CircuitID :: non_neg_integer(),
         Reason    :: Reason.
 create_circuit_id(#state { protocol_version = 4,
-                           direction        = inbound,
+                           direction        = Direction,
                            circuits         = Circuits }) ->
-    create_circuit_id(1, 4, Circuits);
+    create_circuit_id(4, Direction =:= outbound, Circuits, ?CIRCUIT_ID_CREATION_ATTEMPTS).
 
-create_circuit_id(#state { protocol_version = 4,
-                           direction        = outbound,
-                           circuits         = Circuits }) ->
-    create_circuit_id(0, 4, Circuits);
+%% @private
+create_circuit_id(_, _, _, 0) ->
+    {error, not_found};
 
-create_circuit_id(#state { protocol_version = 3,
-                           circuits         = Circuits }) ->
-    %% FIXME(ahf): ...
-    {error, not_supported};
-
-create_circuit_id(_) ->
-    {error, unknown_protocol}.
-
-create_circuit_id(MSB, Size, Circuits) ->
-    create_circuit_id(MSB, Size, Circuits, 120).
-
-create_circuit_id(MSB, Size, Circuits, Try) ->
-    <<_:1/integer, Random/binary>> = onion_random:bytes(Size),
-    CircuitID = binary:decode_unsigned(<<MSB:1/integer, Random/binary>>),
-    case maps:get(Random, Circuits, not_found) of
+create_circuit_id(ProtocolVersion, MSB, Circuits, Tries) ->
+    {ok, CircuitID} = onion_circuit:id(ProtocolVersion, MSB),
+    case maps:get(CircuitID, Circuits, not_found) of
         not_found ->
             {ok, CircuitID};
 
         _ ->
-            create_circuit_id(MSB, Size, Circuits, Try - 1)
-    end;
-
-create_circuit_id(_, _, _, 0) ->
-    {error, unable_to_find_circuit_id}.
+            create_circuit_id(ProtocolVersion, MSB, Circuits, Tries - 1)
+    end.
