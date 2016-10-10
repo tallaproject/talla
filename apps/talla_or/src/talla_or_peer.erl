@@ -819,7 +819,7 @@ server_certificate() ->
         NewContext :: Context.
 update_context(Context, Packet) ->
     case Context of
-        Context when is_binary(Context) ->
+        {sha256, _} = Context ->
             crypto:hash_update(Context, Packet);
 
         _ ->
