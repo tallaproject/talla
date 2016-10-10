@@ -675,11 +675,15 @@ handle_event(info, {ssl, Socket, Packet}, #state { socket = Socket, continuation
 
 handle_event(info, {ssl_closed, Socket}, #state { socket = Socket } = StateData) ->
     %% Our peer's socket was closed. Stop our peer process.
+    lager:notice("Connection closed"),
+
     {stop, normal, StateData};
 
 handle_event(info, {ssl_error, Socket, Reason}, #state { socket = Socket } = StateData) ->
     %% Our peer's socket was moved to an erroneous state. Stop our peer
     %% process.
+    lager:warning("Connection closed with an error: ~p", [Reason]),
+
     {stop, {ssl_error, Reason}, StateData};
 
 handle_event(internal, decode_packet, #state { continuation     = Continuation,
