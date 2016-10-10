@@ -291,7 +291,7 @@ outbound_handshake(internal, {cell, #{ command := versions,
                                        payload := Versions }}, StateData) ->
     case onion_protocol:shared_protocol(Versions) of
         {ok, ProtocolVersion} ->
-            lager:notice("Negotiated protocol version: ~b", [ProtocolVersion]),
+            lager:info("Negotiated protocol version: ~b", [ProtocolVersion]),
 
             %% Update our state.
             NewStateData = StateData#state {
@@ -405,7 +405,7 @@ inbound_version_handshake(internal, {cell_sent, #{ command := versions,
     %% protocol that both parties are able to speak.
     case onion_protocol:shared_protocol(Versions) of
         {ok, ProtocolVersion} ->
-            lager:notice("Negotiated protocol version: ~b", [ProtocolVersion]),
+            lager:info("Negotiated protocol version: ~b", [ProtocolVersion]),
 
             %% Send certs cell.
             CertsCell = onion_cell:certs([#{ type => 1, cert => link_certificate() },
@@ -622,7 +622,7 @@ handle_event(cast, {send, #{ command := Command,
     {ok, Packet} = onion_cell:encode(ProtocolVersion, Cell),
 
     %% Log cell information.
-    lager:notice("(v~b) <- ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
+    lager:info("(v~b) <- ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
 
     %% Enqueue packet.
     talla_or_peer_send:enqueue(SendProcess, Packet),
@@ -706,7 +706,7 @@ handle_event(internal, decode_packet, #state { continuation     = Continuation,
             %% We could avoid this by having each state function return
             %% [{next_event, internal, decode_packet}], but it seems nicer for
             %% the protocol handling code this way.
-            lager:notice("(v~b) -> ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
+            lager:info("(v~b) -> ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
 
             %% Update our StateData.
             NewStateData = StateData#state {
