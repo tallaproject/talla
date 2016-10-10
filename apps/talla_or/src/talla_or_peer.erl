@@ -184,7 +184,7 @@ normal(internal, {cell, #{ command := create2,
     case maps:get(CircuitID, Circuits, not_found) of
         not_found ->
             %% FIXME(ahf): Generate new CircuitID here.
-            {ok, Pid} = talla_or_circuit_pool:start_circuit(self(), CircuitID),
+            {ok, Pid} = start_circuit(CircuitID),
 
             %% Update our state.
             NewStateData = StateData#state {
@@ -749,7 +749,7 @@ handle_event(info, cell_timeout, StateData) ->
 handle_event({call, From}, create_circuit, #state { circuits = Circuits } = StateData) ->
     case create_circuit_id(StateData) of
         {ok, CircuitID} ->
-            {ok, Circuit} = talla_or_circuit_pool:start_circuit(self(), CircuitID),
+            {ok, Circuit} = start_circuit(CircuitID),
 
             lager:notice("Creating new circuit: ~p (~p)", [CircuitID, Circuit]),
 
@@ -940,4 +940,20 @@ create_circuit_id(ProtocolVersion, MSB, Circuits, Tries) ->
 
         _ ->
             create_circuit_id(ProtocolVersion, MSB, Circuits, Tries - 1)
+    end.
+
+%% @private
+-spec start_circuit(CircuitID) -> {ok, Circuit} | {error, Reason}
+    when
+        CircuitID :: onion_circuit:id(),
+        Circuit   :: talla_or_circuit:t(),
+        Reason    :: term().
+start_circuit(CircuitID) ->
+    case talla_or_circuit_pool:start_circuit(self(), CircuitID) of
+        {ok, Circuit} = Result ->
+            erlang:monitor(process, Circuit),
+            Result;
+
+        {error, _} = Error ->
+            Error
     end.
