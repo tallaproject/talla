@@ -184,7 +184,7 @@ normal(internal, {cell, #{ command := create2,
     case maps:get(CircuitID, Circuits, not_found) of
         not_found ->
             %% FIXME(ahf): Generate new CircuitID here.
-            {ok, Pid} = talla_or_circuit:start_link(CircuitID),
+            {ok, Pid} = talla_or_circuit_pool:start_circuit(self(), CircuitID),
 
             %% Update our state.
             NewStateData = StateData#state {
@@ -749,7 +749,7 @@ handle_event(info, cell_timeout, StateData) ->
 handle_event({call, From}, create_circuit, #state { circuits = Circuits } = StateData) ->
     case create_circuit_id(StateData) of
         {ok, CircuitID} ->
-            {ok, Circuit} = talla_or_circuit:start_link(CircuitID),
+            {ok, Circuit} = talla_or_circuit_pool:start_circuit(self(), CircuitID),
 
             lager:notice("Creating new circuit: ~p (~p)", [CircuitID, Circuit]),
 

@@ -12,8 +12,9 @@
 -behaviour(gen_statem).
 
 %% API.
--export([start_link/1,
+-export([start_link/2,
          stop/1,
+
          dispatch/2
         ]).
 
@@ -61,13 +62,14 @@
 %% API.
 %% ----------------------------------------------------------------------------
 
--spec start_link(CircuitID) -> {ok, Circuit} | {error, Reason}
+-spec start_link(Peer, CircuitID) -> {ok, Circuit} | {error, Reason}
     when
-        CircuitID :: non_neg_integer(),
+        Peer      :: talla_or_peer:t(),
+        CircuitID :: onion_circuit:id(),
         Circuit   :: t(),
         Reason    :: term().
-start_link(CircuitID) ->
-    gen_statem:start_link(?MODULE, [CircuitID, self()], []).
+start_link(Peer, CircuitID) ->
+    gen_statem:start_link(?MODULE, [Peer, CircuitID], []).
 
 -spec stop(Circuit) -> ok
     when
@@ -207,14 +209,14 @@ await_peer_connect(EventType, EventContent, StateData) ->
 
 %% @private
 %% This function is used to initialize our state machine.
-init([CircuitID, Parent]) ->
+init([Peer, CircuitID]) ->
     %% We want to trap exit signals.
     process_flag(trap_exit, true),
 
     %% Our initial state.
     StateData = #state {
         circuit = CircuitID,
-        parent  = Parent
+        parent  = Peer
     },
 
     %% We start in the create state.
