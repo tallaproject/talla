@@ -346,39 +346,21 @@ outbound_handshake(internal, {cell_sent, #{ command := certs,
                                                                 Type =:= 2
                                                             end, Certs),
     {ok, ServerIdentityPublicKey} = onion_x509:public_key(ServerIdentityCertificate),
-    {ok, ServerIdentityPublicKeyDER} = onion_rsa:der_encode(ServerIdentityPublicKey),
 
-    ClientIdentity = talla_core_identity_key:fingerprint(sha256),
-    ServerIdentity = crypto:hash(sha256, ServerIdentityPublicKeyDER),
-    ServerLog = crypto:hash_final(ReceiveContext),
-    ClientLog = crypto:hash_final(SendContext),
-    ServerCertificate = crypto:hash(sha256, onion_ssl_session:certificate(SessionInformation)),
+    AuthenticateCell = onion_authenticate_cell:create(#{
+            client_identity_public_key => talla_core_identity_key:public_key(),
+            server_identity_public_key => ServerIdentityPublicKey,
 
-    ClientRandom = onion_ssl_session:client_random(SessionInformation),
-    ServerRandom = onion_ssl_session:server_random(SessionInformation),
-    MasterSecret = onion_ssl_session:master_secret(SessionInformation),
+            client_log => crypto:hash_final(SendContext),
+            server_log => crypto:hash_final(ReceiveContext),
 
-    TLSSecrets = crypto:hmac(sha256, MasterSecret, [ClientRandom,
-                                                    ServerRandom,
-                                                    "Tor V3 handshake TLS cross-certification",
-                                                    <<0>>]),
+            server_certificate => onion_ssl_session:certificate(SessionInformation),
+            ssl_session        => SessionInformation,
 
-    %% Hash to avoid leaking pure randomness.
-    <<Random:24/binary, _:8/binary>> = crypto:hash(sha256, onion_random:bytes(32)),
+            authentication_secret_key => AuthenticationKey
+        }),
 
-    Message = <<"AUTH0001",
-                ClientIdentity/binary,
-                ServerIdentity/binary,
-                ServerLog/binary,
-                ClientLog/binary,
-                ServerCertificate/binary,
-                TLSSecrets/binary,
-                Random/binary>>,
-    MessageDigest = crypto:hash(sha256, Message),
-
-    MessageSignature = onion_rsa:private_encrypt(MessageDigest, AuthenticationKey, rsa_pkcs1_padding),
-
-    send(onion_cell:authenticate(1, <<Message/binary, MessageSignature/binary>>)),
+    send(AuthenticateCell),
     send(onion_cell:netinfo(ip_address(Socket), [talla_or_config:address()])),
 
     %% Update our state.
