@@ -240,13 +240,13 @@ normal(EventType, EventContent, StateData) ->
         StateData    :: state().
 await_connect(cast, {connect, Address, Port}, undefined) ->
     %% We have been asked to connect to a remote OR.
-    lager:notice("Connecting to onion router at ~s:~b", [inet:ntoa(Address), Port]),
+    lager:info("Connecting to onion router at ~s:~b", [inet:ntoa(Address), Port]),
 
     %% Try to connect to the OR.
     case ssl:connect(Address, Port, [{mode, binary}, {packet, raw}, {active, false}, {nodelay, true}], ?CONNECT_TIMEOUT) of
         {ok, Socket} ->
             %% We successfully managed to connect to the OR.
-            lager:notice("Connected to onion router at ~s:~b", [inet:ntoa(Address), Port]),
+            lager:info("Connected to onion router at ~s:~b", [inet:ntoa(Address), Port]),
 
             %% Add connection metadata to lager for tracing.
             lager:md([
@@ -269,7 +269,7 @@ await_connect(cast, {connect, Address, Port}, undefined) ->
             {next_state, outbound_handshake, NewStateData};
 
         {error, Reason} ->
-            lager:warning("Unable to connect to onion router at ~s:~b: ~p", [inet:ntoa(Address), Port, Reason]),
+            lager:info("Unable to connect to onion router at ~s:~b: ~p", [inet:ntoa(Address), Port, Reason]),
 
             %% FIXME(ahf): Consider a:
             %% talla_or_peer_manager:peer_error(Reason).
@@ -578,7 +578,7 @@ init(Ref, Socket, _Transport, _Options) ->
     ]),
 
     %% Log the incoming connection.
-    lager:notice("Accepted incoming onion connection from ~s:~b", [inet:ntoa(ip_address(Socket)),
+    lager:info("Accepted incoming onion connection from ~s:~b", [inet:ntoa(ip_address(Socket)),
                                                                    port_number(Socket)]),
 
     %% Initialize our state.
