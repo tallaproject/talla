@@ -5,7 +5,7 @@ network.
 
 ## Getting Started
 
-1. `git clone git@lab.baconsvin.org:talla/talla.git`
+1. `git clone https://lab.baconsvin.org/talla/talla.git`
 2. `cd talla/`
 3. `make console`
 
