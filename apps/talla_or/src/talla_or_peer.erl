@@ -826,6 +826,10 @@ update_context(Context, Packet) ->
         {sha256, _} = Context ->
             crypto:hash_update(Context, Packet);
 
+        % pre-OTP 19.2 behaviour
+        Context when is_binary(Context) ->
+            crypto:hash_update(Context, Packet);
+
         _ ->
             Context
     end.
