@@ -12,7 +12,7 @@
 -behaviour(application).
 
 %% API.
--export([start/2, stop/1]).
+-export([start/2, stop/1, start_relay/0]).
 
 -spec start(normal | {takeover, node()} | {failover, node()}, term()) -> {ok, pid()} | {error, term()}.
 start(_Type, _Args) ->
