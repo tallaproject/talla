@@ -68,12 +68,6 @@
             %% Protocol version used by the cell decoder.
             protocol_version = 3 :: onion_cell:version(),
 
-            %% Authentication challenge.
-            authentication_challenge :: binary(),
-
-            %% Authenticate cell.
-            authenticate_payload :: map(),
-
             %% Certs cell.
             certs_payload :: [map()],
 
@@ -91,6 +85,12 @@
     }).
 
 -type state() :: #state {}.
+
+-type der_encoded() :: public_key:der_encoded().
+
+-type cert() :: #{ type => 1..3,
+                   cert => der_encoded()}.
+
 
 %% How long to keep the connection alive without having been able to decode a
 %% cell.
@@ -298,10 +298,13 @@ outbound_handshake(internal, {cell, #{ command := versions,
 
 outbound_handshake(internal, {cell, #{ command := certs,
                                        circuit := 0,
-                                       payload := Payload }}, StateData) ->
-    %% Update state.
+                                       payload := Certs }}, #state { session_info = #{ certificate := SSLCert } } = StateData) ->
+
+    %% Validate certificates according to tor-spec 4.2
+    ok = outbound_cert_validation(Certs, SSLCert),
+
     NewStateData = StateData#state {
-        certs_payload = Payload
+        certs_payload = Certs
     },
 
     {keep_state, NewStateData};
@@ -393,11 +396,8 @@ inbound_handshake(internal, {cell, #{ command := versions,
             NetinfoCell = onion_cell:netinfo(ip_address(Socket), [talla_or_config:address()]),
             send_internal(NetinfoCell, NewStateData),
 
-            %% Update our state.
-            FinalStateData = NewStateData#state {
-                authentication_challenge = Challenge,
-                send_context             = NewSendContext3
-            },
+            %% Update our send context.
+            FinalStateData = NewStateData#state { send_context = NewSendContext3 },
 
             %% Await incoming certs, authenticate & netinfo cells
             {keep_state, FinalStateData};
@@ -409,11 +409,15 @@ inbound_handshake(internal, {cell, #{ command := versions,
 
 inbound_handshake(internal, {cell, #{ command := certs,
                                       circuit := 0,
-                                      payload := Certs }}, StateData) ->
-    %% Received certs cell. Store the payload and continue.
+                                      payload := Certs }}, #state { receive_context = ReceiveContext,
+                                                                    send_context    = SendContext} = StateData) ->
+    %% Validate certs (according to tor-spec 4.2), store them, stop context updating and wait for authenticate cell.
     %% FIXME(ahf): Check if we have already received a certs cell.
+    ok = inbound_cert_validation(Certs),
     NewStateData = StateData#state {
-        certs_payload = Certs
+        certs_payload   = Certs,
+        receive_context = {final, crypto:hash_final(ReceiveContext)},
+        send_context    = {final, crypto:hash_final(SendContext)}
     },
 
     %% Continue.
@@ -421,15 +425,18 @@ inbound_handshake(internal, {cell, #{ command := certs,
 
 inbound_handshake(internal, {cell, #{ command := authenticate,
                                       circuit := 0,
-                                      payload := Authenticate }}, StateData) ->
-    %% Received authenticate cell. Store the payload and continue.
+                                      payload := #{ auth_type := AuthType, auth := Authenticate } }}, StateData) ->
+    %% Received authenticate cell. Validate the contents and continue.
     %% FIXME(ahf): Check if we have already received an authenticate cell.
-    NewStateData = StateData#state {
-        authenticate_payload = Authenticate
-    },
+    case AuthType of
+        1 ->
+            ok = validate_authenticate_cell(Authenticate, StateData);
+        _ ->
+            throw({error, unknown_auth_type})
+    end,
 
     %% Continue.
-    {keep_state, NewStateData};
+    {keep_state, StateData};
 
 inbound_handshake(internal, {cell, #{ command := netinfo,
                                       circuit := 0 }}, StateData) ->
@@ -440,8 +447,6 @@ inbound_handshake(internal, {cell, #{ command := netinfo,
     %% Update our state and remove all the information that is no longer
     %% needed for us.
     NewStateData = StateData#state {
-        authentication_challenge = undefined,
-        authenticate_payload     = undefined,
         certs_payload            = undefined,
 
         %% No longer needed and we want to avoid running a SHA-256 update on
@@ -758,11 +763,15 @@ server_certificate() ->
 %% Update the send or receive context (if it is still needed to be updated).
 -spec update_context(Context, Packet) -> NewContext
     when
-        Context    :: binary(),
+        Context    :: binary() | {final, binary()} | undefined,
         Packet     :: binary(),
         NewContext :: Context.
 update_context(undefined, _Packet) ->
     undefined;
+
+update_context({final, Context}, _Packet) ->
+    {final, Context};
+
 update_context(Context, Packet) ->
     case Context of
         {sha256, _} = Context ->
@@ -918,3 +927,135 @@ start_circuit(CircuitID) ->
         {error, _} = Error ->
             Error
     end.
+
+%% @private
+-spec inbound_cert_validation(Certs) -> ok
+    when
+        Certs :: [cert()].
+inbound_cert_validation(Certs) ->
+    %% Check that the correct certs are in the payload
+    [{2, IdCert}, {3, AuthCert}] = sort_certs(Certs),
+
+    % Certificate validation performed on both inbound and outbound handshakes
+    base_validation(IdCert, AuthCert),
+
+    % Check that key in the auth cert have the correct format
+    {ok, AuthKey} = onion_x509:public_key(AuthCert),
+    true = (1024 =:= onion_rsa:key_size(AuthKey)),
+    ok.
+
+%% @private
+-spec outbound_cert_validation(Certs, SSLCert) -> ok
+      when
+          Certs :: [cert()],
+          SSLCert :: der_encoded().
+outbound_cert_validation(Certs, SSLCert) ->
+    %% Check that the correct certs are in the payload
+    [{1, LinkCert}, {2, IdCert}] = sort_certs(Certs),
+
+    % Certificate validation performed on both inbound and outbound handshakes
+    base_validation(IdCert, LinkCert),
+
+    % Check that pubkey from the TLS certificate is equal to the pubkey of the Link certificate
+    true = equal_keys(SSLCert, LinkCert),
+    ok.
+
+%% @private
+-spec sort_certs(Certs) -> Certs
+    when
+        Certs :: [cert()].
+sort_certs([#{ type := Type1, cert := Cert1 }, #{ type := Type2, cert := Cert2 }]) ->
+    lists:keysort(1, [{Type1, Cert1}, {Type2, Cert2}]).
+
+%% @private
+-spec base_validation(IdCert, OtherCert) -> ok
+    when
+        IdCert :: der_encoded(),
+        OtherCert :: IdCert.
+base_validation(IdCert, OtherCert) ->
+    % Check that key in the ID certificate have the correct format
+    {ok, IdKey} = onion_x509:public_key(IdCert),
+    true = (1024 =:= onion_rsa:key_size(IdKey)),
+
+    % Verify signatures
+    true = onion_x509:verify(OtherCert, IdKey),
+    true = onion_x509:verify(IdCert, IdKey),
+    true = onion_x509:is_self_signed(IdCert),
+
+    % Validate validUntil and validAfter for both certificates
+    true = validate_timestamps(IdCert),
+    true = validate_timestamps(OtherCert),
+    ok.
+
+%% @private
+-spec equal_keys(Cert1, Cert2) -> true | false
+    when
+        Cert1 :: der_encoded(),
+        Cert2 :: Cert1.
+equal_keys(Cert1, Cert2) ->
+    {ok, Key1} = onion_x509:public_key(Cert1),
+    {ok, Key2} = onion_x509:public_key(Cert2),
+    Key1 =:= Key2.
+
+%% @private
+-spec validate_timestamps(Cert) -> true | false
+    when
+        Cert :: der_encoded().
+validate_timestamps(Cert) ->
+    Now = onion_time:epoch(),
+    ValidAfter = onion_time:to_epoch(onion_x509:not_before(Cert)),
+    ValidUntil = onion_time:to_epoch(onion_x509:not_after(Cert)),
+    (ValidAfter < Now) and (Now < ValidUntil).
+
+%% @private
+-spec validate_authenticate_cell(Authenticate, StateData) -> ok
+    when
+        Authenticate :: onion_cell:auth(),
+        StateData    :: state().
+validate_authenticate_cell(#{ client_id_key_digest := ClientKeyDigest,
+                              server_id_key_digest := ServerKeyDigest,
+
+                              server_log           := ServerLog,
+                              client_log           := ClientLog,
+
+                              tls_cert_digest      := TLSCertDigest,
+                              tls_secrets_digest   := TLSSecretsDigest,
+                              random_bytes         := RandomBytes,
+                              signature            := Signature}, #state { send_context    = {final, SendContext},
+                                                                           receive_context = {final, ReceiveContext},
+                                                                           certs_payload   = Certs,
+                                                                           session_info    = SessionInformation}) ->
+    % Create Auth payload from our own data
+    [{2, IdCert}, {3, AuthCert}] = sort_certs(Certs),
+    {ok, ClientAuthPublicKey} = onion_x509:public_key(AuthCert),
+    {ok, ClientIdentityPublicKey} = onion_x509:public_key(IdCert),
+
+    OurAuthPayload = onion_authenticate_cell:create_payload(#{
+            client_identity_public_key => ClientIdentityPublicKey,
+            server_identity_public_key => talla_core_identity_key:public_key(),
+
+            client_log => ReceiveContext,
+            server_log => SendContext,
+
+            server_certificate => onion_ssl_session:certificate(SessionInformation),
+            ssl_session        => SessionInformation
+        }, RandomBytes),
+
+    %% Assemble auth payload that we've received from the peer
+    PeerAuthPayload = <<"AUTH0001",
+                        ClientKeyDigest/binary,
+                        ServerKeyDigest/binary,
+                        ServerLog/binary,
+                        ClientLog/binary,
+                        TLSCertDigest/binary,
+                        TLSSecretsDigest/binary,
+                        RandomBytes/binary>>,
+
+    %% Compare the two payloads and verify they are equal
+    OurAuthPayloadHash = crypto:hash(sha256, OurAuthPayload),
+    PeerAuthPayloadHash = crypto:hash(sha256, PeerAuthPayload),
+    true = PeerAuthPayloadHash =:= OurAuthPayloadHash,
+
+    %% Verify Peers signature of auth payload
+    true = PeerAuthPayloadHash =:= onion_rsa:public_decrypt(Signature, ClientAuthPublicKey, rsa_pkcs1_padding),
+    ok.
