@@ -21,12 +21,9 @@
 
 %% States.
 -export([normal/3,
-
          await_connect/3,
          outbound_handshake/3,
-
-         inbound_version_handshake/3,
-         authenticate/3
+         inbound_handshake/3
         ]).
 
 %% Generic State Machine Callbacks.
@@ -71,18 +68,6 @@
             %% Protocol version used by the cell decoder.
             protocol_version = 3 :: onion_cell:version(),
 
-            %% Versions cell.
-            versions_payload :: [onion_cell:version()],
-
-            %% Authentication challenge.
-            authentication_challenge :: binary(),
-
-            %% Authentication key.
-            authentication_key :: public_key:der_encoded(),
-
-            %% Authenticate cell.
-            authenticate_payload :: map(),
-
             %% Certs cell.
             certs_payload :: [map()],
 
@@ -100,6 +85,12 @@
     }).
 
 -type state() :: #state {}.
+
+-type der_encoded() :: public_key:der_encoded().
+
+-type cert() :: #{ type => 1..3,
+                   cert => der_encoded()}.
+
 
 %% How long to keep the connection alive without having been able to decode a
 %% cell.
@@ -264,9 +255,9 @@ await_connect(cast, {connect, Address, Port}, undefined) ->
             },
 
             %% Send a version cell to the remote OR.
-            send(onion_cell:versions()),
+            SendContext = send_internal(onion_cell:versions(), NewStateData),
 
-            {next_state, outbound_handshake, NewStateData};
+            {next_state, outbound_handshake, NewStateData#state{ send_context = SendContext }};
 
         {error, Reason} ->
             lager:info("Unable to connect to onion router at ~s:~b: ~p", [inet:ntoa(Address), Port, Reason]),
@@ -307,17 +298,23 @@ outbound_handshake(internal, {cell, #{ command := versions,
 
 outbound_handshake(internal, {cell, #{ command := certs,
                                        circuit := 0,
-                                       payload := Payload }}, StateData) ->
-    %% Update state.
+                                       payload := Certs }}, #state { session_info = #{ certificate := SSLCert } } = StateData) ->
+
+    %% Validate certificates according to tor-spec 4.2
+    ok = outbound_cert_validation(Certs, SSLCert),
+
     NewStateData = StateData#state {
-        certs_payload = Payload
+        certs_payload = Certs
     },
 
     {keep_state, NewStateData};
 
 outbound_handshake(internal, {cell, #{ command := auth_challenge,
                                        circuit := 0,
-                                       payload := #{ methods := [{rsa, sha256, tls_secret}] } }}, #state { receive_context = ReceiveContext } = StateData) ->
+                                       payload := #{ methods := [{rsa, sha256, tls_secret}] } }}, #state { receive_context    = ReceiveContext,
+                                                                                                           socket             = Socket,
+                                                                                                           certs_payload      = Certs,
+                                                                                                           session_info       = SessionInformation} = StateData) ->
     %% Get the authentication certificate and store the secret key we
     %% use for later verification.
     {#{ secret := AuthenticationSecretKey }, AuthenticationCertificate} = talla_or_tls_manager:auth_certificate(),
@@ -325,23 +322,16 @@ outbound_handshake(internal, {cell, #{ command := auth_challenge,
     %% Send certs cell.
     CertsCell = onion_cell:certs([#{ type => 3, cert => AuthenticationCertificate },
                                   #{ type => 2, cert => identity_certificate() }]),
-    send(CertsCell),
+    NewSendContext = send_internal(CertsCell, StateData),
 
-    %% Update state.
+    %% Update our state (since we do not need contexts etc. anymore).
     NewStateData = StateData#state {
-        receive_context    = {done, ReceiveContext},
-        authentication_key = AuthenticationSecretKey
+        certs_payload      = undefined,
+        receive_context    = undefined,
+        send_context       = undefined
     },
 
-    {keep_state, NewStateData}; %% FIXME
-
-outbound_handshake(internal, {cell_sent, #{ command := certs,
-                                            circuit := 0 }}, #state { receive_context    = {done, ReceiveContext},
-                                                                      send_context       = SendContext,
-                                                                      authentication_key = AuthenticationKey,
-                                                                      session_info       = SessionInformation,
-                                                                      certs_payload      = Certs,
-                                                                      socket             = Socket } = StateData) ->
+    %% Create and send authenticate cell
     [#{ cert := ServerIdentityCertificate }] = lists:filter(fun (#{ type := Type}) ->
                                                                 Type =:= 2
                                                             end, Certs),
@@ -351,25 +341,19 @@ outbound_handshake(internal, {cell_sent, #{ command := certs,
             client_identity_public_key => talla_core_identity_key:public_key(),
             server_identity_public_key => ServerIdentityPublicKey,
 
-            client_log => crypto:hash_final(SendContext),
+            client_log => crypto:hash_final(NewSendContext),
             server_log => crypto:hash_final(ReceiveContext),
 
             server_certificate => onion_ssl_session:certificate(SessionInformation),
             ssl_session        => SessionInformation,
 
-            authentication_secret_key => AuthenticationKey
+            authentication_secret_key => AuthenticationSecretKey
         }),
+    send_internal(AuthenticateCell, NewStateData),
 
-    send(AuthenticateCell),
-    send(onion_cell:netinfo(ip_address(Socket), [talla_or_config:address()])),
-
-    %% Update our state.
-    NewStateData = StateData#state {
-        authentication_key = undefined,
-        certs_payload      = undefined,
-        receive_context    = undefined,
-        send_context       = undefined
-    },
+    %% Create and send netinfo cell
+    NetinfoCell = onion_cell:netinfo(ip_address(Socket), [talla_or_config:address()]),
+    send_internal(NetinfoCell, NewStateData),
 
     talla_or_peer_manager:connected(),
 
@@ -378,102 +362,84 @@ outbound_handshake(internal, {cell_sent, #{ command := certs,
 outbound_handshake(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
 
--spec inbound_version_handshake(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
+-spec inbound_handshake(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
     when
         EventType    :: gen_statem:event_type(),
         EventContent :: term(),
         StateData    :: state().
-inbound_version_handshake(internal, {cell, #{ command := versions,
-                                              circuit := 0,
-                                              payload := Versions }}, StateData) ->
-    %% We receive an versions cell on circuit 0 - we send our versions cell
-    %% and updates our state. The versions handshake will happen in
-    %% {cell_sent, VersionsCell}.
-    send(onion_cell:versions()),
-
-    %% Update our state.
-    NewStateData = StateData#state {
-        versions_payload = Versions
-    },
-
-    {keep_state, NewStateData};
-
-inbound_version_handshake(internal, {cell_sent, #{ command := versions,
-                                                   circuit := 0 }}, #state { versions_payload = Versions,
-                                                                             socket           = Socket } = StateData) ->
-    %% We had sent our versions cell, time to negotiate if we can find a
-    %% protocol that both parties are able to speak.
+inbound_handshake(internal, {cell, #{ command := versions,
+                                      circuit := 0,
+                                      payload := Versions }}, #state { socket = Socket } =  StateData) ->
     case onion_protocol:shared_protocol(Versions) of
         {ok, ProtocolVersion} ->
+            %% We receive an versions cell on circuit 0 - we send our versions cell,
+            %% handshake information, and update our state.
+            NewSendContext1 = send_internal(onion_cell:versions(), StateData),
+
             lager:info("Negotiated protocol version: ~b", [ProtocolVersion]),
+
+            NewStateData = StateData#state { protocol_version = ProtocolVersion },
 
             %% Send certs cell.
             CertsCell = onion_cell:certs([#{ type => 1, cert => link_certificate() },
                                           #{ type => 2, cert => identity_certificate() }]),
-            send(CertsCell),
+            NewSendContext2 = send_internal(CertsCell, NewStateData#state { send_context = NewSendContext1 }),
 
-            %% Send Auth Challenge.
             %% We hash the random bytes to avoid exposing "pure" randomness.
             Challenge = crypto:hash(sha256, onion_random:bytes(32)),
+
+            %% Send Auth Challenge.
             AuthChallengeCell = onion_cell:auth_challenge(Challenge, [{rsa, sha256, tls_secret}]),
-            send(AuthChallengeCell),
+            NewSendContext3 = send_internal(AuthChallengeCell, NewStateData#state { send_context = NewSendContext2 }),
 
             %% Send Netinfo.
             NetinfoCell = onion_cell:netinfo(ip_address(Socket), [talla_or_config:address()]),
-            send(NetinfoCell),
+            send_internal(NetinfoCell, NewStateData),
 
-            %% Update our state.
-            NewStateData = StateData#state {
-                protocol_version         = ProtocolVersion,
-                authentication_challenge = Challenge
-            },
+            %% Update our send context.
+            FinalStateData = NewStateData#state { send_context = NewSendContext3 },
 
-            {next_state, authenticate, NewStateData};
+            %% Await incoming certs, authenticate & netinfo cells
+            {keep_state, FinalStateData};
 
         {error, _} ->
             lager:warning("Unable to negotiate versions with peer. They support: ~p", [Versions]),
             {stop, normal, StateData}
     end;
 
-inbound_version_handshake(internal, {cell, #{ command := Command }}, StateData) ->
-    lager:warning("Protocol violation during handshake: Received ~s", [Command]),
-
-    {stop, normal, StateData};
-
-inbound_version_handshake(EventType, EventContent, StateData) ->
-    handle_event(EventType, EventContent, StateData).
-
--spec authenticate(EventType, EventContent, StateData) -> gen_statem:handle_event_result()
-    when
-        EventType    :: gen_statem:event_type(),
-        EventContent :: term(),
-        StateData    :: state().
-authenticate(internal, {cell, #{ command := certs,
-                                 circuit := 0,
-                                 payload := Certs }}, StateData) ->
-    %% Received certs cell. Store the payload and continue.
+inbound_handshake(internal, {cell, #{ command := certs,
+                                      circuit := 0,
+                                      payload := Certs }}, #state { receive_context = ReceiveContext,
+                                                                    send_context    = SendContext} = StateData) ->
+    %% Validate certs (according to tor-spec 4.2), store them, stop context updating and wait for authenticate cell.
     %% FIXME(ahf): Check if we have already received a certs cell.
+    ok = inbound_cert_validation(Certs),
     NewStateData = StateData#state {
-        certs_payload = Certs
+        certs_payload   = Certs,
+        receive_context = {final, crypto:hash_final(ReceiveContext)},
+        send_context    = {final, crypto:hash_final(SendContext)}
     },
 
     %% Continue.
     {keep_state, NewStateData};
 
-authenticate(internal, {cell, #{ command := authenticate,
-                                 circuit := 0,
-                                 payload := Authenticate }}, StateData) ->
-    %% Received authenticate cell. Store the payload and continue.
+inbound_handshake(internal, {cell, #{ command := authenticate,
+                                      circuit := 0,
+                                      payload := #{ auth_type := AuthType, auth := Authenticate } }}, StateData) ->
+    %% Received authenticate cell. Validate the contents and continue.
     %% FIXME(ahf): Check if we have already received an authenticate cell.
-    NewStateData = StateData#state {
-        authenticate_payload = Authenticate
-    },
+    case AuthType of
+        1 ->
+            ok = validate_authenticate_cell(Authenticate, StateData);
+        _ ->
+            throw({error, unknown_auth_type})
+    end,
 
     %% Continue.
-    {keep_state, NewStateData};
+    {keep_state, StateData};
 
-authenticate(internal, {cell, #{ command := netinfo,
-                                 circuit := 0 }}, StateData) ->
+inbound_handshake(internal, {cell, #{ command := netinfo,
+                                      circuit := 0 }}, StateData) ->
     %% We received a netinfo cell and is now able to determine if the remote
     %% peer wants to authenticate with us (they are a relay) or they want to
     %% continue as an unauthenticated peer (they are a client).
@@ -481,10 +447,7 @@ authenticate(internal, {cell, #{ command := netinfo,
     %% Update our state and remove all the information that is no longer
     %% needed for us.
     NewStateData = StateData#state {
-        authentication_challenge = undefined,
-        authenticate_payload     = undefined,
         certs_payload            = undefined,
-        versions_payload         = undefined,
 
         %% No longer needed and we want to avoid running a SHA-256 update on
         %% every incoming packet.
@@ -493,7 +456,12 @@ authenticate(internal, {cell, #{ command := netinfo,
     },
     {next_state, normal, NewStateData};
 
-authenticate(EventType, EventContent, StateData) ->
+inbound_handshake(internal, {cell, #{ command := Command }}, StateData) ->
+    lager:warning("Protocol violation during handshake: Received ~s", [Command]),
+
+    {stop, normal, StateData};
+
+inbound_handshake(EventType, EventContent, StateData) ->
     handle_event(EventType, EventContent, StateData).
 
 %% ----------------------------------------------------------------------------
@@ -597,7 +565,7 @@ init(Ref, Socket, _Transport, _Options) ->
     },
 
     %% Enter the Generic State Machine loop.
-    gen_statem:enter_loop(?MODULE, [], inbound_version_handshake, NewStateData).
+    gen_statem:enter_loop(?MODULE, [], inbound_handshake, NewStateData).
 
 %% ----------------------------------------------------------------------------
 %% Generic State Handler.
@@ -614,33 +582,9 @@ init(Ref, Socket, _Transport, _Options) ->
         EventType    :: gen_statem:event_type(),
         EventContent :: term(),
         StateData    :: state().
-handle_event(cast, {send, #{ command := Command,
-                             circuit := CircuitID } = Cell}, #state { send_process     = SendProcess,
-                                                                      send_context     = SendContext,
-                                                                      protocol_version = ProtocolVersion } = StateData) ->
-    %% Encode the cell to a binary packet and enqueue it to our send process.
-    {ok, Packet} = onion_cell:encode(ProtocolVersion, Cell),
-
-    %% Log cell information.
-    lager:info("(v~b) <- ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
-
-    %% Enqueue packet.
-    talla_or_peer_send:enqueue(SendProcess, Packet),
-
-    %% Update our StateData.
-    NewStateData = StateData#state {
-        send_context = update_context(SendContext, Packet)
-    },
-
-    %% Continue with the current state that we are in, but inject a cell_sent
-    %% event for states that needs knowledge about whether a packet have been
-    %% sent.
-    {keep_state, NewStateData, [{next_event, internal, {cell_sent, Cell}}]};
-
-handle_event(internal, {cell_sent, _Cell}, StateData) ->
-    %% We have sent a cell and it might be that a state function needs to react
-    %% to this, but the default is to just ignore it.
-    {keep_state, StateData};
+handle_event(cast, {send, Cell}, StateData) ->
+    SendContext = send_internal(Cell, StateData),
+    {keep_state, StateData#state { send_context = SendContext }};
 
 handle_event(internal, {cell, _Cell}, StateData) ->
     %% We have received a cell and none of our state handlers handled the
@@ -690,6 +634,7 @@ handle_event(internal, decode_packet, #state { continuation     = Continuation,
                                                protocol_version = ProtocolVersion,
                                                receive_context  = ReceiveContext,
                                                last_cell_timer  = LastCellTimer } = StateData) ->
+
     %% Our peer have received data that needs to be decoded by the cell decoder.
     case onion_cell:decode(ProtocolVersion, Continuation) of
         {ok, #{ command := Command,
@@ -818,12 +763,22 @@ server_certificate() ->
 %% Update the send or receive context (if it is still needed to be updated).
 -spec update_context(Context, Packet) -> NewContext
     when
-        Context    :: binary(),
+        Context    :: binary() | {final, binary()} | undefined,
         Packet     :: binary(),
         NewContext :: Context.
+update_context(undefined, _Packet) ->
+    undefined;
+
+update_context({final, Context}, _Packet) ->
+    {final, Context};
+
 update_context(Context, Packet) ->
     case Context of
         {sha256, _} = Context ->
+            crypto:hash_update(Context, Packet);
+
+        % pre-OTP 19.2 behaviour
+        Context when is_binary(Context) ->
             crypto:hash_update(Context, Packet);
 
         _ ->
@@ -832,11 +787,26 @@ update_context(Context, Packet) ->
 
 %% @private
 %% Internal helper function to send a message from within our peer.
--spec send(Cell) -> ok
+-spec send_internal(Cell, StateData) -> NewSendContext
     when
-        Cell :: onion_cell:t().
-send(Cell) ->
-    send(self(), Cell).
+        Cell           :: onion_cell:t(),
+        StateData      :: state(),
+        NewSendContext :: binary().
+send_internal(#{ command := Command,
+                 circuit := CircuitID } = Cell, #state { send_process     = SendProcess,
+                                                         send_context     = SendContext,
+                                                         protocol_version = ProtocolVersion}) ->
+    %% Encode the cell to a binary packet and enqueue it to our send process.
+    {ok, Packet} = onion_cell:encode(ProtocolVersion, Cell),
+
+    %% Log cell information.
+    lager:info("(v~b) <- ~p (CircuitID: ~b)", [ProtocolVersion, Command, CircuitID]),
+
+    %% Enqueue packet.
+    talla_or_peer_send:enqueue(SendProcess, Packet),
+
+    %% Update our StateData's send_context if necessary.
+    update_context(SendContext, Packet).
 
 %% @private
 %% Get the IP address of a peer as a string.
@@ -957,3 +927,135 @@ start_circuit(CircuitID) ->
         {error, _} = Error ->
             Error
     end.
+
+%% @private
+-spec inbound_cert_validation(Certs) -> ok
+    when
+        Certs :: [cert()].
+inbound_cert_validation(Certs) ->
+    %% Check that the correct certs are in the payload
+    [{2, IdCert}, {3, AuthCert}] = sort_certs(Certs),
+
+    % Certificate validation performed on both inbound and outbound handshakes
+    base_validation(IdCert, AuthCert),
+
+    % Check that key in the auth cert have the correct format
+    {ok, AuthKey} = onion_x509:public_key(AuthCert),
+    true = (1024 =:= onion_rsa:key_size(AuthKey)),
+    ok.
+
+%% @private
+-spec outbound_cert_validation(Certs, SSLCert) -> ok
+      when
+          Certs :: [cert()],
+          SSLCert :: der_encoded().
+outbound_cert_validation(Certs, SSLCert) ->
+    %% Check that the correct certs are in the payload
+    [{1, LinkCert}, {2, IdCert}] = sort_certs(Certs),
+
+    % Certificate validation performed on both inbound and outbound handshakes
+    base_validation(IdCert, LinkCert),
+
+    % Check that pubkey from the TLS certificate is equal to the pubkey of the Link certificate
+    true = equal_keys(SSLCert, LinkCert),
+    ok.
+
+%% @private
+-spec sort_certs(Certs) -> Certs
+    when
+        Certs :: [cert()].
+sort_certs([#{ type := Type1, cert := Cert1 }, #{ type := Type2, cert := Cert2 }]) ->
+    lists:keysort(1, [{Type1, Cert1}, {Type2, Cert2}]).
+
+%% @private
+-spec base_validation(IdCert, OtherCert) -> ok
+    when
+        IdCert :: der_encoded(),
+        OtherCert :: IdCert.
+base_validation(IdCert, OtherCert) ->
+    % Check that key in the ID certificate have the correct format
+    {ok, IdKey} = onion_x509:public_key(IdCert),
+    true = (1024 =:= onion_rsa:key_size(IdKey)),
+
+    % Verify signatures
+    true = onion_x509:verify(OtherCert, IdKey),
+    true = onion_x509:verify(IdCert, IdKey),
+    true = onion_x509:is_self_signed(IdCert),
+
+    % Validate validUntil and validAfter for both certificates
+    true = validate_timestamps(IdCert),
+    true = validate_timestamps(OtherCert),
+    ok.
+
+%% @private
+-spec equal_keys(Cert1, Cert2) -> true | false
+    when
+        Cert1 :: der_encoded(),
+        Cert2 :: Cert1.
+equal_keys(Cert1, Cert2) ->
+    {ok, Key1} = onion_x509:public_key(Cert1),
+    {ok, Key2} = onion_x509:public_key(Cert2),
+    Key1 =:= Key2.
+
+%% @private
+-spec validate_timestamps(Cert) -> true | false
+    when
+        Cert :: der_encoded().
+validate_timestamps(Cert) ->
+    Now = onion_time:epoch(),
+    ValidAfter = onion_time:to_epoch(onion_x509:not_before(Cert)),
+    ValidUntil = onion_time:to_epoch(onion_x509:not_after(Cert)),
+    (ValidAfter < Now) and (Now < ValidUntil).
+
+%% @private
+-spec validate_authenticate_cell(Authenticate, StateData) -> ok
+    when
+        Authenticate :: onion_cell:auth(),
+        StateData    :: state().
+validate_authenticate_cell(#{ client_id_key_digest := ClientKeyDigest,
+                              server_id_key_digest := ServerKeyDigest,
+
+                              server_log           := ServerLog,
+                              client_log           := ClientLog,
+
+                              tls_cert_digest      := TLSCertDigest,
+                              tls_secrets_digest   := TLSSecretsDigest,
+                              random_bytes         := RandomBytes,
+                              signature            := Signature}, #state { send_context    = {final, SendContext},
+                                                                           receive_context = {final, ReceiveContext},
+                                                                           certs_payload   = Certs,
+                                                                           session_info    = SessionInformation}) ->
+    % Create Auth payload from our own data
+    [{2, IdCert}, {3, AuthCert}] = sort_certs(Certs),
+    {ok, ClientAuthPublicKey} = onion_x509:public_key(AuthCert),
+    {ok, ClientIdentityPublicKey} = onion_x509:public_key(IdCert),
+
+    OurAuthPayload = onion_authenticate_cell:create_payload(#{
+            client_identity_public_key => ClientIdentityPublicKey,
+            server_identity_public_key => talla_core_identity_key:public_key(),
+
+            client_log => ReceiveContext,
+            server_log => SendContext,
+
+            server_certificate => onion_ssl_session:certificate(SessionInformation),
+            ssl_session        => SessionInformation
+        }, RandomBytes),
+
+    %% Assemble auth payload that we've received from the peer
+    PeerAuthPayload = <<"AUTH0001",
+                        ClientKeyDigest/binary,
+                        ServerKeyDigest/binary,
+                        ServerLog/binary,
+                        ClientLog/binary,
+                        TLSCertDigest/binary,
+                        TLSSecretsDigest/binary,
+                        RandomBytes/binary>>,
+
+    %% Compare the two payloads and verify they are equal
+    OurAuthPayloadHash = crypto:hash(sha256, OurAuthPayload),
+    PeerAuthPayloadHash = crypto:hash(sha256, PeerAuthPayload),
+    true = PeerAuthPayloadHash =:= OurAuthPayloadHash,
+
+    %% Verify Peers signature of auth payload
+    true = PeerAuthPayloadHash =:= onion_rsa:public_decrypt(Signature, ClientAuthPublicKey, rsa_pkcs1_padding),
+    ok.

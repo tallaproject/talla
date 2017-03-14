@@ -23,8 +23,13 @@ name() ->
 
 -spec version() -> string().
 version() ->
-    {ok, Version} = application:get_key(talla_core, vsn),
-    Version.
+    case application:get_key(talla_core, vsn) of
+        {ok, Version} ->
+            Version;
+        undefined ->
+            {ok, Version} = application:get_env(talla_core, vsn),
+            Version
+    end.
 
 -spec platform() -> string().
 platform() ->

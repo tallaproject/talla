@@ -14,6 +14,9 @@
 %% API.
 -export([start/2, stop/1]).
 
+%% Internal API.
+-export([start_relay/0]).
+
 -spec start(normal | {takeover, node()} | {failover, node()}, term()) -> {ok, pid()} | {error, term()}.
 start(_Type, _Args) ->
     case talla_or_sup:start_link() of
